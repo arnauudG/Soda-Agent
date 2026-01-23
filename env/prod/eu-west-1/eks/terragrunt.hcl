@@ -92,6 +92,12 @@ inputs = {
   manage_aws_auth_configmap                = true
   enable_cluster_creator_admin_permissions = true
 
+  # Pod Identity (newer alternative to IRSA for some use cases)
+  enable_pod_identity = false  # Keep false for now, IRSA is sufficient
+
+  # Access entries for better RBAC management (optional)
+  # access_entries = {}
+
   # Prod: Restrict public access (private endpoint only recommended)
   # Set to false and use only private endpoint for maximum security
   cluster_endpoint_public_access  = false
@@ -110,10 +116,10 @@ inputs = {
   ]
   cloudwatch_log_group_retention_in_days = local.cloudwatch_log_retention
 
-  # Encryption at rest
+  # Encryption at rest - encrypt all resources for better security
   cluster_encryption_config = {
     provider_key_arn = null  # Use AWS managed keys
-    resources        = ["secrets"]
+    resources        = ["secrets", "configmaps"]  # Encrypt secrets and configmaps
   }
 
   # Environment-specific node group configuration (prod: larger, more reliable)
@@ -127,6 +133,37 @@ inputs = {
       instance_types  = local.node_group_config.instance_types
       capacity_type   = local.node_group_config.capacity_type
       ami_type        = "AL2023_x86_64_STANDARD"
+
+      # Disk configuration (prod: larger disk)
+      disk_size = 50
+      disk_type = "gp3"
+
+      # Instance metadata options for security
+      metadata_options = {
+        http_endpoint               = "enabled"
+        http_tokens                 = "required"
+        http_put_response_hop_limit = 2
+        instance_metadata_tags      = "enabled"
+      }
+
+      # Node labels for better pod scheduling
+      labels = {
+        Environment = local.env
+        NodeGroup   = "ops"
+        ManagedBy    = "terraform"
+      }
+
+      # Update configuration for zero-downtime updates (prod: more conservative)
+      update_config = {
+        max_unavailable_percentage = 33  # More conservative for prod
+      }
+
+      # Taints (optional - uncomment if you want to prevent non-tolerated pods)
+      # taints = [{
+      #   key    = "ops"
+      #   value  = "true"
+      #   effect = "NO_SCHEDULE"
+      # }]
     }
   }
 
@@ -142,11 +179,139 @@ inputs = {
     }
   }
 
-  cluster_addons = {
-    coredns    = { most_recent = true }
-    kube-proxy = { most_recent = true }
-    vpc-cni    = { most_recent = true }
+  # Node security group additional rules - allow outbound to external data sources
+  # Note: EKS module allows all outbound by default, but we're being explicit here
+  # for common data source ports that Soda Agent might need to connect to.
+  # Traffic flows: Pods -> Node SG -> NAT Gateway -> Internet
+  # To restrict access, modify cidr_blocks to specific IPs/CIDRs instead of "0.0.0.0/0"
+  node_security_group_additional_rules = {
+    # Allow HTTPS to external APIs and services
+    egress_https_external = {
+      description = "Allow HTTPS to external APIs and services"
+      protocol    = "tcp"
+      from_port   = 443
+      to_port     = 443
+      type        = "egress"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+    # Allow HTTP (for some APIs that don't use HTTPS)
+    egress_http_external = {
+      description = "Allow HTTP to external services"
+      protocol    = "tcp"
+      from_port   = 80
+      to_port     = 80
+      type        = "egress"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+    # Common database ports (adjust based on your data sources)
+    # PostgreSQL
+    egress_postgres = {
+      description = "Allow PostgreSQL connections to external databases"
+      protocol    = "tcp"
+      from_port   = 5432
+      to_port     = 5432
+      type        = "egress"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+    # MySQL/MariaDB
+    egress_mysql = {
+      description = "Allow MySQL/MariaDB connections to external databases"
+      protocol    = "tcp"
+      from_port   = 3306
+      to_port     = 3306
+      type        = "egress"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+    # SQL Server
+    egress_sqlserver = {
+      description = "Allow SQL Server connections to external databases"
+      protocol    = "tcp"
+      from_port   = 1433
+      to_port     = 1433
+      type        = "egress"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+    # MongoDB
+    egress_mongodb = {
+      description = "Allow MongoDB connections to external databases"
+      protocol    = "tcp"
+      from_port   = 27017
+      to_port     = 27017
+      type        = "egress"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+    # Snowflake
+    egress_snowflake = {
+      description = "Allow Snowflake connections"
+      protocol    = "tcp"
+      from_port   = 443
+      to_port     = 443
+      type        = "egress"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+    # DNS for external resolution
+    egress_dns_udp = {
+      description = "Allow DNS UDP for external resolution"
+      protocol    = "udp"
+      from_port   = 53
+      to_port     = 53
+      type        = "egress"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
+    egress_dns_tcp = {
+      description = "Allow DNS TCP for external resolution"
+      protocol    = "tcp"
+      from_port   = 53
+      to_port     = 53
+      type        = "egress"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
   }
+
+  cluster_addons = {
+    coredns = {
+      most_recent = true
+      configuration_values = jsonencode({
+        compute = {
+          resources = {
+            requests = {
+              cpu    = "200m"
+              memory = "256Mi"
+            }
+            limits = {
+              cpu    = "500m"
+              memory = "512Mi"
+            }
+          }
+        }
+      })
+    }
+    kube-proxy = {
+      most_recent = true
+    }
+    vpc-cni = {
+      most_recent = true
+      # VPC CNI configuration for better networking performance
+      configuration_values = jsonencode({
+        env = {
+          ENABLE_PREFIX_DELEGATION = "true"
+          WARM_PREFIX_TARGET       = "2"  # Prod: more warm IPs
+        }
+      })
+    }
+    # EBS CSI driver for persistent volumes
+    aws-ebs-csi-driver = {
+      most_recent = true
+      service_account_role_arn = null  # Will use IRSA automatically
+    }
+  }
+
+  # Cluster maintenance window (optional - uncomment if you want scheduled maintenance)
+  # cluster_maintenance_window = {
+  #   day_of_week = "sunday"
+  #   start_time  = "03:00"
+  #   duration    = 4  # hours
+  # }
 
   # Merge common tags with component-specific tags
   tags = merge(local.common_tags, {
