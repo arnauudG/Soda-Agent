@@ -1,26 +1,46 @@
-include "root" { path = find_in_parent_folders("root.hcl") }
+# env/<env>/<region>/eks/terragrunt.hcl
+# EKS configuration - includes env-level root.hcl (1 level, avoids nested includes)
+
+include "env" {
+  path = "../../root.hcl"
+}
 
 locals {
-  parent       = read_terragrunt_config(find_in_parent_folders("root.hcl"))
-  org          = local.parent.locals.org
-  env          = local.parent.locals.env
-  aws_region   = local.parent.locals.aws_region
+  parent = read_terragrunt_config("../../root.hcl")
+  org    = local.parent.locals.org
+  env    = local.parent.locals.env
+  
+  # Extract region from path: env/dev/eu-west-1/eks
+  path_parts = split("/", get_terragrunt_dir())
+  region_index = length(local.path_parts) - 2  # region is 2 levels up from eks
+  aws_region   = local.path_parts[local.region_index]
+  
+  # Common tags from parent, with Region added
+  common_tags = merge(local.parent.locals.common_tags, {
+    Region = local.aws_region
+  })
+  
   modules_root = local.parent.locals.modules_root
-  common_tags  = local.parent.locals.common_tags
 
   cluster_name = "${local.org}-${local.env}-eks"
 
-  # Environment-specific node group configuration
+  # Environment-specific node group configuration (cost-optimized for dev)
   node_group_config = {
     desired_size = 1
-    min_size     = 1
+    # WARNING: min_size=0 requires Cluster Autoscaler to be installed and configured
+    # If you don't have cluster autoscaler, set min_size=1 to ensure system pods can run
+    min_size     = 0  # Allow scaling to 0 when idle (requires cluster autoscaler)
     max_size     = 2
-    instance_types = ["t3.small"]
+    instance_types = ["t3.micro"]  # Smallest instance for dev to minimize costs
     capacity_type  = "SPOT"
   }
 
   # CloudWatch log retention (days)
   cloudwatch_log_retention = 7
+  
+  # State bucket and lock table names
+  state_bucket = "${get_aws_account_id()}-${local.org}-${local.env}-tfstate-${local.aws_region}"
+  lock_table   = "${get_aws_account_id()}-${local.org}-${local.env}-tf-locks"
 }
 
 # ---- Terragrunt dependencies whose outputs we read ----
@@ -53,6 +73,35 @@ dependencies {
   ]
 }
 
+remote_state {
+  backend = "s3"
+  config = {
+    bucket         = local.state_bucket
+    key            = "eks/terraform.tfstate"
+    region         = local.aws_region
+    dynamodb_table = local.lock_table
+    encrypt        = true
+  }
+}
+
+generate "provider" {
+  path      = "provider.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<-HCL
+    provider "aws" { region = "${local.aws_region}" }
+  HCL
+}
+
+generate "backend" {
+  path      = "backend.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<-HCL
+    terraform {
+      backend "s3" {}
+    }
+  HCL
+}
+
 terraform {
   source = "tfr://registry.terraform.io/terraform-aws-modules/eks/aws?version=20.24.0"
 }
@@ -67,14 +116,6 @@ generate "versions_override" {
         aws = { source = "hashicorp/aws", version = ">= 5.61.0, < 6.0.0" }
       }
     }
-  HCL
-}
-
-generate "provider_region" {
-  path      = "provider_override.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<-HCL
-    provider "aws" { region = "${local.aws_region}" }
   HCL
 }
 
@@ -177,94 +218,11 @@ inputs = {
     }
   }
 
-  # Node security group additional rules - allow outbound to external data sources
-  # Note: EKS module allows all outbound by default, but we're being explicit here
-  # for common data source ports that Soda Agent might need to connect to.
-  # Traffic flows: Pods -> Node SG -> NAT Gateway -> Internet
-  # To restrict access, modify cidr_blocks to specific IPs/CIDRs instead of "0.0.0.0/0"
-  node_security_group_additional_rules = {
-    # Allow HTTPS to external APIs and services
-    egress_https_external = {
-      description = "Allow HTTPS to external APIs and services"
-      protocol    = "tcp"
-      from_port   = 443
-      to_port     = 443
-      type        = "egress"
-      cidr_blocks = ["0.0.0.0/0"]
-    }
-    # Allow HTTP (for some APIs that don't use HTTPS)
-    egress_http_external = {
-      description = "Allow HTTP to external services"
-      protocol    = "tcp"
-      from_port   = 80
-      to_port     = 80
-      type        = "egress"
-      cidr_blocks = ["0.0.0.0/0"]
-    }
-    # Common database ports (adjust based on your data sources)
-    # PostgreSQL
-    egress_postgres = {
-      description = "Allow PostgreSQL connections to external databases"
-      protocol    = "tcp"
-      from_port   = 5432
-      to_port     = 5432
-      type        = "egress"
-      cidr_blocks = ["0.0.0.0/0"]
-    }
-    # MySQL/MariaDB
-    egress_mysql = {
-      description = "Allow MySQL/MariaDB connections to external databases"
-      protocol    = "tcp"
-      from_port   = 3306
-      to_port     = 3306
-      type        = "egress"
-      cidr_blocks = ["0.0.0.0/0"]
-    }
-    # SQL Server
-    egress_sqlserver = {
-      description = "Allow SQL Server connections to external databases"
-      protocol    = "tcp"
-      from_port   = 1433
-      to_port     = 1433
-      type        = "egress"
-      cidr_blocks = ["0.0.0.0/0"]
-    }
-    # MongoDB
-    egress_mongodb = {
-      description = "Allow MongoDB connections to external databases"
-      protocol    = "tcp"
-      from_port   = 27017
-      to_port     = 27017
-      type        = "egress"
-      cidr_blocks = ["0.0.0.0/0"]
-    }
-    # Snowflake
-    egress_snowflake = {
-      description = "Allow Snowflake connections"
-      protocol    = "tcp"
-      from_port   = 443
-      to_port     = 443
-      type        = "egress"
-      cidr_blocks = ["0.0.0.0/0"]
-    }
-    # DNS for external resolution
-    egress_dns_udp = {
-      description = "Allow DNS UDP for external resolution"
-      protocol    = "udp"
-      from_port   = 53
-      to_port     = 53
-      type        = "egress"
-      cidr_blocks = ["0.0.0.0/0"]
-    }
-    egress_dns_tcp = {
-      description = "Allow DNS TCP for external resolution"
-      protocol    = "tcp"
-      from_port   = 53
-      to_port     = 53
-      type        = "egress"
-      cidr_blocks = ["0.0.0.0/0"]
-    }
-  }
+  # Node security group additional rules
+  # Note: EKS module already allows all outbound traffic by default (0.0.0.0/0)
+  # This means pods can reach external data sources via: Pods -> Node SG -> NAT Gateway -> Internet
+  # No additional egress rules needed unless you want to restrict access to specific IPs/CIDRs
+  # node_security_group_additional_rules = {}
 
   cluster_addons = {
     coredns = {
@@ -310,6 +268,25 @@ inputs = {
   #   start_time  = "03:00"
   #   duration    = 4  # hours
   # }
+
+  # Cost Optimization Notes:
+  # 1. Cluster Autoscaler: Install via Helm to enable scaling to 0 when idle
+  #    helm repo add autoscaler https://kubernetes.github.io/autoscaler
+  #    helm install cluster-autoscaler autoscaler/cluster-autoscaler \
+  #      --set autoDiscovery.clusterName=${local.cluster_name} \
+  #      --set awsRegion=${local.aws_region} \
+  #      --set nodeSelector."k8s\.io/cluster-autoscaler/enabled"=true \
+  #      --set scaleDownUtilizationThreshold=0.5 \
+  #      --set scaleDownDelayAfterAdd=2m
+  #
+  # 2. Scheduled Scaling (kube-downscaler): Scale down during off-hours
+  #    helm repo add kube-downscaler https://codecentric.github.io/helm-charts
+  #    helm install kube-downscaler kube-downscaler/kube-downscaler \
+  #      --set schedule.timezone=Europe/London \
+  #      --set schedule.defaultSchedule="Mon-Fri 09:00-17:00 Europe/London"
+  #
+  # 3. With min_size=0, nodes can scale to zero when no pods are running
+  #    This requires cluster autoscaler to be installed and configured
 
   # Merge common tags with component-specific tags
   tags = merge(local.common_tags, {
