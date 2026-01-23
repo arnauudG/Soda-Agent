@@ -11,21 +11,199 @@ The infrastructure consists of:
 - **Ops Infrastructure** (EC2 instance, security groups, IAM roles)
 - **Soda Agent** deployed via Helm on EKS
 
+## **Architecture Diagram**
+
+The following diagram illustrates the complete infrastructure stack and component relationships:
+
+```mermaid
+graph TB
+    subgraph "AWS Account"
+        subgraph "VPC (10.10.0.0/16)"
+            subgraph "Public Subnets (3 AZs)"
+                IGW[Internet Gateway]
+                NAT[NAT Gateway]
+                OPS_EC2[Ops EC2 Instance<br/>t3.micro/small<br/>SSM Access Only]
+            end
+            
+            subgraph "Private Subnets (3 AZs)"
+                subgraph "EKS Cluster"
+                    EKS[EKS Control Plane<br/>Kubernetes 1.31]
+                    subgraph "Managed Node Groups"
+                        NODE1[Worker Node 1<br/>t3.small/medium]
+                        NODE2[Worker Node 2<br/>t3.small/medium]
+                        NODE3[Worker Node N<br/>SPOT Instances]
+                    end
+                    subgraph "Kubernetes Namespace: soda-agent"
+                        SODA[Soda Agent Pods<br/>Helm Chart]
+                    end
+                end
+            end
+            
+            subgraph "VPC Endpoints"
+                VPCE_SSM[SSM Endpoint]
+                VPCE_ECR[ECR Endpoints<br/>api + dkr]
+                VPCE_STS[STS Endpoint]
+                VPCE_LOGS[CloudWatch Logs]
+                VPCE_S3[S3 Gateway]
+            end
+        end
+        
+        subgraph "AWS Services"
+            S3_STATE[S3 State Bucket<br/>Terraform State]
+            DDB_LOCKS[DynamoDB<br/>State Locks]
+            CW_LOGS[CloudWatch Logs<br/>EKS Control Plane]
+            ECR_REG[ECR Registry<br/>Container Images]
+        end
+    end
+    
+    subgraph "External Services"
+        SODA_CLOUD[Soda Cloud<br/>cloud.soda.io]
+        HELM_REPO[Helm Repository<br/>registry.cloud.soda.io]
+    end
+    
+    %% Connections
+    IGW -->|Internet Access| OPS_EC2
+    NAT -->|Outbound| IGW
+    OPS_EC2 -->|HTTPS 443| EKS
+    OPS_EC2 -->|SSM Session Manager| VPCE_SSM
+    
+    EKS -->|Private DNS| VPCE_ECR
+    EKS -->|Private DNS| VPCE_STS
+    EKS -->|Private DNS| VPCE_LOGS
+    EKS -->|Gateway| VPCE_S3
+    NODE1 -->|Pull Images| VPCE_ECR
+    NODE2 -->|Pull Images| VPCE_ECR
+    NODE3 -->|Pull Images| VPCE_ECR
+    
+    SODA -->|API Calls| SODA_CLOUD
+    SODA -->|Pull Images| ECR_REG
+    EKS -->|Logs| CW_LOGS
+    
+    %% Deployment flow
+    S3_STATE -.->|State Storage| EKS
+    DDB_LOCKS -.->|State Locking| EKS
+    
+    style EKS fill:#326ce5,stroke:#1e3a8a,color:#fff
+    style SODA fill:#10b981,stroke:#047857,color:#fff
+    style OPS_EC2 fill:#f59e0b,stroke:#b45309,color:#fff
+    style VPCE_SSM fill:#8b5cf6,stroke:#6d28d9,color:#fff
+    style VPCE_ECR fill:#8b5cf6,stroke:#6d28d9,color:#fff
+    style SODA_CLOUD fill:#ec4899,stroke:#be185d,color:#fff
+```
+
+### **Component Details**
+
+#### **Network Layer**
+- **VPC**: Isolated network environment (10.10.0.0/16)
+- **Public Subnets**: Internet-facing resources (NAT Gateway, Ops EC2)
+- **Private Subnets**: Internal resources (EKS cluster, worker nodes)
+- **3 Availability Zones**: High availability across eu-west-1a, eu-west-1b, eu-west-1c
+
+#### **Compute Layer**
+- **EKS Cluster**: Managed Kubernetes control plane
+  - **Dev**: 1-2 nodes, t3.small, public endpoint enabled
+  - **Prod**: 2-5 nodes, t3.medium/large, private endpoint only
+- **Ops EC2**: Administrative instance for cluster management
+  - Access via SSM Session Manager (no SSH keys)
+  - IAM role with EKS access permissions
+
+#### **Security Layer**
+- **Security Groups**: Network-level firewall rules
+  - Ops SG: Outbound HTTPS to SSM endpoints only
+  - EKS SG: Ingress from Ops SG on port 443
+- **VPC Endpoints**: Private connectivity to AWS services
+  - No internet gateway required for AWS API calls
+  - Reduced data transfer costs
+  - Enhanced security posture
+
+#### **Application Layer**
+- **Soda Agent**: Data quality monitoring agent
+  - Deployed via Helm chart
+  - Runs in dedicated Kubernetes namespace
+  - Authenticates to Soda Cloud via API keys
+  - Pulls container images from private registry
+
+#### **State Management**
+- **S3 Backend**: Terraform state storage (encrypted)
+- **DynamoDB**: State locking to prevent concurrent modifications
+- **Per Environment**: Separate state buckets for dev/prod
+
+### **Data Flow**
+
+1. **Deployment Flow**:
+   - Terraform/Terragrunt → S3 State Bucket → DynamoDB Lock
+   - Creates infrastructure in dependency order (VPC → EKS → Soda Agent)
+
+2. **Operational Flow**:
+   - Ops EC2 → EKS API (via private endpoint or public if enabled)
+   - EKS Nodes → VPC Endpoints → AWS Services (ECR, STS, CloudWatch)
+   - Soda Agent Pods → ECR (via VPC endpoint) → Pull images
+   - Soda Agent Pods → Soda Cloud → Send data quality metrics
+
+3. **Logging Flow**:
+   - EKS Control Plane → CloudWatch Logs (via VPC endpoint)
+   - Application Logs → CloudWatch Logs
+   - Retention: 7 days (dev), 30 days (prod)
+
 ## **Directory Structure**
 
 ```
-infra/
+Soda-Agent/
+├── root.hcl                        # Repository root config (org definition)
 ├── module/                          # Shared Terraform modules
 │   ├── helm-soda-agent/            # Soda Agent Helm deployment
 │   └── ops-ec2-eks-access/        # EKS access configuration
 ├── env/                            # Environment-specific configurations
-│   ├── dev/eu-west-1/             # Development environment
-│   ├── prod/eu-west-1/            # Production environment
+│   ├── dev/
+│   │   ├── root.hcl               # Environment-level config (env = "dev")
+│   │   └── eu-west-1/
+│   │       ├── root.hcl           # Region-level config (aws_region)
+│   │       ├── bootstrap/          # Phase 0: Bootstrap (one-time)
+│   │       ├── network/
+│   │       │   ├── vpc/            # Phase 1: VPC
+│   │       │   └── vpc-endpoints/  # Phase 2: VPC Endpoints
+│   │       ├── ops/
+│   │       │   ├── sg-ops/         # Phase 3: Security Groups
+│   │       │   └── ec2-ops/        # Phase 5: EC2 Instance
+│   │       ├── eks/
+│   │       │   ├── terragrunt.hcl  # Phase 4: EKS Cluster
+│   │       │   └── ops-ec2-eks-access/  # Phase 6: EKS Access
+│   │       └── addons/
+│   │           └── soda-agent/     # Phase 7: Soda Agent
+│   └── prod/
+│       └── eu-west-1/              # Same structure as dev
 ├── deploy.sh                       # Automated deployment script
 ├── destroy.sh                      # Automated destruction script
 ├── bootstrap.sh                    # One-time bootstrap script
+├── .pre-commit-config.yaml         # Pre-commit hooks configuration
+├── .gitignore                      # Git ignore rules
 └── README.md                       # This file
 ```
+
+### **Terragrunt Configuration Hierarchy**
+
+The configuration follows a hierarchical structure:
+
+```
+root.hcl (repo root)
+  └── org = "datashift"
+  
+env/dev/root.hcl
+  └── includes root.hcl
+  └── env = "dev"
+  └── common_tags (without Region)
+  
+env/dev/eu-west-1/root.hcl
+  └── includes env/dev/root.hcl
+  └── aws_region = "eu-west-1"
+  └── common_tags (with Region added)
+  └── state_bucket, lock_table
+```
+
+This structure allows:
+- **DRY Configuration**: Environment settings defined once
+- **Multi-Region Support**: Easy to add new regions
+- **Consistent Tagging**: Tags inherited through the hierarchy
 
 ## **Bootstrap Process (One-Time Setup)**
 
@@ -43,7 +221,6 @@ The bootstrap process creates:
 
 ### **Bootstrap Command:**
 ```bash
-cd infra
 ./bootstrap.sh <environment>
 
 # Examples:
@@ -68,7 +245,7 @@ cd infra
 
 ### **Phase 1: VPC**
 ```bash
-cd infra/env/<env>/eu-west-1/network/vpc
+cd env/<env>/eu-west-1/network/vpc
 terragrunt apply --auto-approve
 ```
 
@@ -397,7 +574,24 @@ export SODA_IMAGE_APIKEY_SECRET="your-image-secret"
 6. **Check Terraform state** - ensure state is consistent
 7. **Use automated scripts** - avoid manual terragrunt commands for complex deployments
 
-## **Recent Fixes & Improvements**
+## **Recent Improvements**
+
+### **Configuration Structure (2024)**
+- **Hierarchical Configuration**: Reorganized Terragrunt configs with repo → environment → region hierarchy
+- **DRY Principle**: Organization name defined once at repo root, inherited by all environments
+- **Multi-Region Ready**: Region-specific configs make it easy to add new AWS regions
+
+### **Security Enhancements**
+- **Environment-Specific Security**: Prod EKS endpoint is private-only, dev can be restricted to CIDRs
+- **CloudWatch Logging**: EKS control plane logging enabled (7 days dev, 30 days prod)
+- **Encryption**: EKS secrets encryption at rest enabled
+- **VPC Flow Logs**: Enabled for prod environment
+
+### **Operational Improvements**
+- **Pre-commit Hooks**: Automated Terraform validation, formatting, and security scanning
+- **Resource Tagging**: Standardized common tags across all resources
+- **Environment-Specific Configs**: Different instance sizes, node counts for dev vs prod
+- **Cost Optimization**: Prod uses multiple NAT gateways for HA, dev uses single NAT
 
 ### **Soda Agent Module Updates**
 - **Namespace Creation**: Added explicit `kubernetes_namespace` resource to ensure namespace exists before creating secrets
