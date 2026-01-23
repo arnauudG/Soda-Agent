@@ -18,12 +18,12 @@ override.tf.json
 .terragrunt-cache/
 terragrunt.hcl.bak
 
-# Generated files by Terragrunt
-provider.tf
-backend.tf
-versions_override.tf
-provider_override.tf
-main.tf
+# Generated files by Terragrunt (in env/ directories)
+env/**/provider.tf
+env/**/backend.tf
+env/**/versions_override.tf
+env/**/provider_override.tf
+env/**/main.tf
 
 # Backup files
 *.bak
