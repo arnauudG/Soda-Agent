@@ -41,6 +41,7 @@ Soda-Agent/
 ├── deploy.sh                       # Automated deployment script
 ├── destroy.sh                      # Automated destruction script
 ├── bootstrap.sh                    # One-time bootstrap script
+├── destroy-bootstrap.sh            # Bootstrap destruction script
 ├── .pre-commit-config.yaml         # Pre-commit hooks configuration
 ├── .gitignore                      # Git ignore rules
 └── README.md                       # This file
@@ -107,6 +108,32 @@ The bootstrap process creates:
 - **Multiple confirmation prompts** to prevent accidents
 - **Automatic disable** after completion
 - **Resource existence checks** before proceeding
+
+### **Destroying Bootstrap Resources:**
+
+**WARNING**: Bootstrap destruction should ONLY be run AFTER all infrastructure has been destroyed. This will delete:
+- **All Terraform state files** (stored in S3 bucket)
+- **State locking table** (DynamoDB)
+- **All state history** (versioned state files)
+
+**Bootstrap Destruction Command:**
+```bash
+./destroy-bootstrap.sh <environment>
+
+# Examples:
+./destroy-bootstrap.sh dev     # Destroy dev bootstrap resources
+./destroy-bootstrap.sh prod    # Destroy prod bootstrap resources
+```
+
+**Safety Features:**
+- Requires explicit confirmation: Type `DESTROY BOOTSTRAP` to confirm
+- Shows resource count before destruction
+- Checks for existing resources
+- Multiple warnings about data loss
+
+**Order of Operations:**
+1. Destroy all infrastructure: `./destroy.sh <env>`
+2. Destroy bootstrap: `./destroy-bootstrap.sh <env>`
 
 ## **Deployment Order**
 
@@ -198,6 +225,25 @@ cd ../ops/sg-ops && terragrunt destroy --auto-approve                # Phase 3
 cd ../../network/vpc-endpoints && terragrunt destroy --auto-approve  # Phase 2
 cd ../vpc && terragrunt destroy --auto-approve                       # Phase 1
 ```
+
+### **Bootstrap Destruction (After All Infrastructure)**
+
+**CRITICAL**: Only destroy bootstrap AFTER all infrastructure phases have been destroyed.
+
+```bash
+# Step 1: Destroy all infrastructure phases
+./destroy.sh <env>
+
+# Step 2: Destroy bootstrap (deletes state bucket and lock table)
+./destroy-bootstrap.sh <env>
+```
+
+**What Gets Destroyed:**
+- S3 bucket containing all Terraform state files
+- DynamoDB table for state locking
+- All state file versions and history
+
+**Warning**: This action is **irreversible** and will delete all state. Ensure you have backups if needed.
 
 ## **Environment Variables**
 
@@ -316,6 +362,25 @@ cp env/dev/eu-west-1/ops/sg-ops/terragrunt.hcl env/prod/eu-west-1/ops/sg-ops/ter
 ./deploy.sh <env> <phase>
 ```
 
+### **11. Bootstrap Destruction Issues**
+**Error**: `skip = false` already set, or nested include errors during bootstrap destroy
+
+**Solution**: 
+- The bootstrap destruction script handles `skip = false` gracefully
+- Nested include errors in sibling directories don't affect bootstrap destruction
+- Bootstrap uses standalone configuration to avoid include issues
+- Ensure all infrastructure is destroyed before destroying bootstrap
+
+**Manual bootstrap destruction**:
+```bash
+cd env/<env>/eu-west-1/bootstrap
+# Enable if needed
+sed -i.bak 's/skip = true/skip = false/' terragrunt.hcl
+terragrunt destroy --auto-approve
+# Disable after destruction
+sed -i.bak 's/skip = false/skip = true/' terragrunt.hcl
+```
+
 ## **Cleanup & Maintenance**
 
 ### **Remove Generated Files**
@@ -362,6 +427,7 @@ bootstrap (one-time)
 ### **Bootstrap**
 ```bash
 ./bootstrap.sh <env>           # Bootstrap new environment
+./destroy-bootstrap.sh <env>   # Destroy bootstrap (after all infrastructure)
 ```
 
 ### **Deploy**
@@ -374,6 +440,7 @@ bootstrap (one-time)
 ```bash
 ./destroy.sh <env>             # Destroy all 7 phases (reverse order)
 ./destroy.sh <env> <phase>     # Destroy specific phase (1-7)
+./destroy-bootstrap.sh <env>   # Destroy bootstrap resources (S3 + DynamoDB)
 ```
 
 ### **Validate Configuration**
@@ -423,6 +490,9 @@ terragrunt force-unlock <lock-id>
 # Destroy specific phase (1-7)
 ./destroy.sh prod 7   # Destroy Soda Agent only
 
+# Destroy bootstrap (AFTER all infrastructure is destroyed)
+./destroy-bootstrap.sh prod
+
 # Check for corrupted files
 find env/ -name "terragrunt.hcl" -exec grep -l "ERROR\|WARN" {} \;
 
@@ -447,6 +517,7 @@ export SODA_IMAGE_APIKEY_SECRET="your-image-secret"
 5. **Verify AWS resources** - ensure no conflicts with existing infrastructure
 6. **Check Terraform state** - ensure state is consistent
 7. **Use automated scripts** - avoid manual terragrunt commands for complex deployments
+8. **Destroy in correct order** - infrastructure first, then bootstrap
 
 ## **Recent Improvements**
 
@@ -481,13 +552,18 @@ export SODA_IMAGE_APIKEY_SECRET="your-image-secret"
 - **Automated Deployment**: Enhanced deployment scripts with better error handling
 - **Phase-based Deployment**: Improved phase-by-phase deployment with proper dependency resolution
 - **Bootstrap Safety**: Added multiple safety checks and confirmations for bootstrap process
+- **Bootstrap Destruction**: Added `destroy-bootstrap.sh` script with explicit confirmation requirements
+- **Bootstrap Re-run Support**: Bootstrap script now handles already-enabled bootstrap gracefully
 
 ### **Bootstrap Module Enhancements**
 - **S3 Lifecycle Management**: Automatic transition to Glacier after 30 days, deletion after 90 days
+- **S3 Lifecycle Filter**: Added required `filter {}` blocks to lifecycle rules (AWS provider requirement)
 - **DynamoDB Point-in-Time Recovery**: Enabled for disaster recovery
 - **DynamoDB Encryption**: Server-side encryption enabled
 - **Consistent Tagging**: Uses common_tags from parent configuration
 - **Provider Version**: Updated to match other modules (>= 5.61.0, < 6.0.0)
+- **Bootstrap Destruction Script**: Added `destroy-bootstrap.sh` for safe bootstrap resource cleanup
+- **Standalone Configuration**: Bootstrap uses direct value construction to avoid nested include issues
 
 ## **Notes**
 
