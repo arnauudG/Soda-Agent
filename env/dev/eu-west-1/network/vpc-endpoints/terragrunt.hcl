@@ -8,6 +8,7 @@ locals {
   org        = local.parent.locals.org
   env        = local.parent.locals.env
   aws_region = local.parent.locals.aws_region
+  common_tags = local.parent.locals.common_tags
 }
 
 dependency "vpc" {
@@ -141,10 +142,8 @@ inputs = {
     }
   }
 
-  tags = {
-    Terraform = "true"
+  tags = merge(local.common_tags, {
     Component = "network"
-    Org       = local.org
-    Env       = local.env
-  }
+    Name      = "${local.org}-${local.env}-vpce"
+  })
 }

@@ -5,6 +5,7 @@ locals {
   org        = local.parent.locals.org
   env        = local.parent.locals.env
   aws_region = local.parent.locals.aws_region
+  common_tags = local.parent.locals.common_tags
 }
 
 dependency "vpc" {
@@ -34,5 +35,8 @@ inputs = {
     { from_port = 123, to_port = 123, protocol = "udp", description = "NTP AWS Time Sync", cidr_blocks = "169.254.169.123/32" }
   ]
 
-  tags = { Project = "Soda-Agent", Env = local.env, Managed = "terragrunt" }
+  tags = merge(local.common_tags, {
+    Component = "ops-sg"
+    Name      = "${local.org}-${local.env}-ops-sg"
+  })
 }

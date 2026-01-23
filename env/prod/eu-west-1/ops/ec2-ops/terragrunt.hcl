@@ -7,6 +7,13 @@ locals {
   env          = local.parent.locals.env
   aws_region   = local.parent.locals.aws_region
   modules_root = local.parent.locals.modules_root
+  common_tags  = local.parent.locals.common_tags
+
+  # Environment-specific instance configuration (prod: larger instance)
+  instance_config = {
+    instance_type = "t3.small"  # Prod: slightly larger for better performance
+    volume_size   = 20          # Prod: larger volume
+  }
 }
 
 generate "versions_override" {
@@ -54,7 +61,7 @@ inputs = {
   name              = "${local.org}-${local.env}-ops"
   vpc_id            = dependency.vpc.outputs.vpc_id
   ami_ssm_parameter = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
-  instance_type     = "t3.micro"
+  instance_type     = local.instance_config.instance_type
 
   subnet_id                   = dependency.vpc.outputs.public_subnets[0]
   associate_public_ip_address = true
@@ -77,7 +84,7 @@ inputs = {
   enable_monitoring = true
 
   root_block_device = [{
-    volume_size = 16
+    volume_size = local.instance_config.volume_size
     volume_type = "gp3"
     encrypted   = true
   }]
@@ -93,12 +100,8 @@ inputs = {
     { region = local.aws_region }
   )
 
-  tags = {
-    Terraform = "true"
+  tags = merge(local.common_tags, {
     Component = "ops-ec2"
-    Org       = local.org
-    Env       = local.env
-    Project   = "Soda-Agent"
     Name      = "${local.org}-${local.env}-ops"
-  }
+  })
 }

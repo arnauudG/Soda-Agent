@@ -1,20 +1,24 @@
-# env/<env>/eu-west-1/root.hcl
+# env/prod/eu-west-1/root.hcl
+# Region-specific configuration for prod/eu-west-1
+# Includes environment-level config from ../root.hcl
 
-locals {
-  org        = "datashift"
-  env        = "prod"
-  aws_region = "eu-west-1"
-
-  # From this file's dir (env/<env>/eu-west-1/) go up 3 levels to repo root, then into /module
-  # => env/<env>/eu-west-1/../../../module  ==  <repo>/module
-  modules_root = "${get_terragrunt_dir()}/../../../module"
-
-  state_bucket = "${local.org}-${local.env}-tfstate-${get_aws_account_id()}-${local.aws_region}"
-  lock_table   = "${local.org}-${local.env}-tf-locks"
-  tg_download_dir = pathexpand("~/.terragrunt-cache")
+include "env" {
+  path = "../root.hcl"
 }
 
-download_dir = local.tg_download_dir
+locals {
+  parent     = read_terragrunt_config("../root.hcl")
+  org        = local.parent.locals.org
+  env        = local.parent.locals.env
+  aws_region = "eu-west-1"  # Region is defined at the region level
+  common_tags = merge(local.parent.locals.common_tags, {
+    Region = local.aws_region
+  })
+
+  # State bucket and lock table names
+  state_bucket = "${get_aws_account_id()}-${local.org}-${local.env}-tfstate-${local.aws_region}"
+  lock_table   = "${get_aws_account_id()}-${local.org}-${local.env}-tf-locks"
+}
 
 remote_state {
   backend = "s3"
@@ -45,9 +49,10 @@ generate "backend" {
   HCL
 }
 
-inputs = {
-  org          = local.org
-  env          = local.env
-  aws_region   = local.aws_region
-  modules_root = local.modules_root
-}
+inputs = merge(
+  local.parent.inputs,
+  {
+    aws_region  = local.aws_region
+    common_tags = local.common_tags
+  }
+)

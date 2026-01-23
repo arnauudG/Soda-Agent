@@ -8,6 +8,7 @@ locals {
   org        = local.parent.locals.org
   env        = local.parent.locals.env
   aws_region = local.parent.locals.aws_region
+  common_tags = local.parent.locals.common_tags
 
   prefix = "${local.org}-${local.env}-${local.aws_region}"
 }
@@ -80,11 +81,9 @@ inputs = {
     Name = "${local.prefix}-rt-private"
   }
 
-  # Base tags on everything
-  tags = {
-    Terraform = "true"
+  # Base tags on everything - merge common tags with component-specific tags
+  tags = merge(local.common_tags, {
     Component = "network"
-    Org       = local.org
-    Env       = local.env
-  }
+    Name      = "${local.prefix}-vpc"
+  })
 }
