@@ -1,18 +1,24 @@
 # env/<env>/<region>/bootstrap/terragrunt.hcl
 # Standalone bootstrap (no remote_state include!)
-# Reads org/env/region from the nearest env root.hcl via read_terragrunt_config.
+# Reads org/env/region and bucket names from the parent root.hcl
 
 locals {
   parent     = read_terragrunt_config(find_in_parent_folders("root.hcl"))
   org        = local.parent.locals.org
   env        = local.parent.locals.env
   aws_region = local.parent.locals.aws_region
+  
+  # Use the same bucket and table names as defined in the parent root.hcl
+  state_bucket = local.parent.locals.state_bucket
+  lock_table   = local.parent.locals.lock_table
 }
 
-# Pass org/env into the generated main.tf
+# Pass org/env and bucket names into the generated main.tf
 inputs = {
-  org = local.org
-  env = local.env
+  org          = local.org
+  env          = local.env
+  state_bucket = local.state_bucket
+  lock_table   = local.lock_table
 }
 
 terraform {
@@ -49,19 +55,11 @@ generate "bootstrap" {
   contents  = <<-HCL
     variable "org" { type = string }
     variable "env" { type = string }
-
-    data "aws_caller_identity" "current" {}
-    data "aws_region" "current" {}
-
-    # Bucket name mirrors what repo-root/root.hcl expects:
-    #   <org>-<env>-tfstate-<account>-<region>
-    locals {
-      bucket_name = "$${var.org}-$${var.env}-tfstate-$${data.aws_caller_identity.current.account_id}-$${data.aws_region.current.name}"
-      table_name  = "$${var.org}-$${var.env}-tf-locks"
-    }
+    variable "state_bucket" { type = string }
+    variable "lock_table" { type = string }
 
     resource "aws_s3_bucket" "tfstate" {
-      bucket        = local.bucket_name
+      bucket        = var.state_bucket
       force_destroy = false
       tags = {
         Terraform = "true"
@@ -115,7 +113,7 @@ generate "bootstrap" {
     }
 
     resource "aws_dynamodb_table" "locks" {
-      name         = local.table_name
+      name         = var.lock_table
       billing_mode = "PAY_PER_REQUEST"
       hash_key     = "LockID"
 
