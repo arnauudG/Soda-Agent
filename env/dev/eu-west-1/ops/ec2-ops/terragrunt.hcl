@@ -72,10 +72,12 @@ inputs = {
   iam_role_name                        = "${local.org}-${local.env}-ops-role"
   iam_instance_profile_name            = "${local.org}-${local.env}-ops-instance-profile"
 
-  # <-- Added EKS Cluster policy back in here
+  # IAM policies for ops instance
   iam_role_policies = {
     ssm = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
     eks = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+    # ECR read access for pulling container images
+    ecr = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
   }
 
   create_security_group  = false
@@ -83,15 +85,24 @@ inputs = {
 
   enable_monitoring = true
 
+  # Instance lifecycle management
+  disable_api_termination = false  # Allow termination for cleanup
+  disable_api_stop        = false  # Allow stop/start for cost optimization
+
   root_block_device = [{
-    volume_size = local.instance_config.volume_size
-    volume_type = "gp3"
-    encrypted   = true
+    volume_size           = local.instance_config.volume_size
+    volume_type           = "gp3"
+    encrypted             = true
+    delete_on_termination = true
+    iops                  = 3000  # GP3 baseline IOPS
+    throughput            = 125   # GP3 baseline throughput (MB/s)
   }]
 
   metadata_options = {
-    http_endpoint = "enabled"
-    http_tokens   = "required"
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+    instance_metadata_tags      = "enabled"
   }
 
   user_data_replace_on_change = true

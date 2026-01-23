@@ -15,7 +15,6 @@ The infrastructure consists of:
 
 ```
 Soda-Agent/
-├── root.hcl                        # Repository root config (org definition)
 ├── module/                          # Shared Terraform modules
 │   ├── helm-soda-agent/            # Soda Agent Helm deployment
 │   └── ops-ec2-eks-access/        # EKS access configuration
@@ -52,11 +51,8 @@ Soda-Agent/
 The configuration follows a hierarchical structure:
 
 ```
-root.hcl (repo root)
-  └── org = "datashift"
-  
 env/dev/root.hcl
-  └── includes root.hcl
+  └── org = "datashift" (hardcoded)
   └── env = "dev"
   └── common_tags (without Region)
   
@@ -67,8 +63,10 @@ env/dev/eu-west-1/root.hcl
   └── state_bucket, lock_table
 ```
 
+**Note**: The `org` value is hardcoded in environment-level `root.hcl` files to avoid nested include issues. This simplifies the configuration hierarchy while maintaining the same functionality.
+
 This structure allows:
-- **DRY Configuration**: Environment settings defined once
+- **Simplified Configuration**: No nested includes, easier to maintain
 - **Multi-Region Support**: Easy to add new regions
 - **Consistent Tagging**: Tags inherited through the hierarchy
 
@@ -565,6 +563,20 @@ export SODA_IMAGE_APIKEY_SECRET="your-image-secret"
 - **Bootstrap Destruction Script**: Added `destroy-bootstrap.sh` for safe bootstrap resource cleanup
 - **Standalone Configuration**: Bootstrap uses direct value construction to avoid nested include issues
 
+### **Ops Infrastructure Fine-Tuning (January 2025)**
+- **Security Group Hardening**:
+  - Restricted HTTPS egress from `0.0.0.0/0` to VPC CIDR block (uses VPC endpoints for all AWS service communication)
+  - Added HTTP (port 80) egress for package updates to AWS repositories
+  - Improved security group descriptions and rule documentation
+  - All traffic now routes through VPC endpoints for enhanced security and cost control
+- **EC2 Instance Enhancements**:
+  - Added `AmazonEC2ContainerRegistryReadOnly` IAM policy for ECR access (pulling container images)
+  - Enhanced root block device configuration with explicit GP3 IOPS (3000) and throughput (125 MB/s)
+  - Added `delete_on_termination = true` for proper cleanup
+  - Improved instance metadata security with `http_put_response_hop_limit = 1` and `instance_metadata_tags = enabled`
+  - Added lifecycle management settings (`disable_api_termination`, `disable_api_stop`) for cost optimization
+- **Applied to Both Environments**: All improvements applied consistently to both dev and prod environments
+
 ## **Notes**
 
 - **Bootstrap**: Set to `skip = true` by default. Run `./bootstrap.sh <env>` for new environments.
@@ -579,7 +591,7 @@ export SODA_IMAGE_APIKEY_SECRET="your-image-secret"
 
 ---
 
-**Last Updated**: December 2024  
+**Last Updated**: January 2025  
 **Terraform Version**: >= 1.6  
 **Terragrunt Version**: >= 0.54  
 **AWS Provider**: >= 5.0, < 6.0

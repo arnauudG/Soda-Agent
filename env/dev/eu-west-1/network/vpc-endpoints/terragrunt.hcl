@@ -1,14 +1,59 @@
 # env/<env>/<region>/network/vpc-endpoints/terragrunt.hcl
-include "root" {
-  path = find_in_parent_folders("root.hcl")
+# VPC Endpoints configuration - includes env-level root.hcl (1 level, avoids nested includes)
+
+include "env" {
+  path = "../../../root.hcl"
 }
 
 locals {
-  parent     = read_terragrunt_config(find_in_parent_folders("root.hcl"))
-  org        = local.parent.locals.org
-  env        = local.parent.locals.env
-  aws_region = local.parent.locals.aws_region
-  common_tags = local.parent.locals.common_tags
+  parent = read_terragrunt_config("../../../root.hcl")
+  org    = local.parent.locals.org
+  env    = local.parent.locals.env
+  
+  # Extract region from path: env/dev/eu-west-1/network/vpc-endpoints
+  path_parts = split("/", get_terragrunt_dir())
+  region_index = length(local.path_parts) - 3  # region is 3 levels up from vpc-endpoints
+  aws_region   = local.path_parts[local.region_index]
+  
+  # Common tags from parent, with Region added
+  common_tags = merge(local.parent.locals.common_tags, {
+    Region = local.aws_region
+  })
+  
+  # State bucket and lock table names
+  state_bucket = "${get_aws_account_id()}-${local.org}-${local.env}-tfstate-${local.aws_region}"
+  lock_table   = "${get_aws_account_id()}-${local.org}-${local.env}-tf-locks"
+}
+
+remote_state {
+  backend = "s3"
+  config = {
+    bucket         = local.state_bucket
+    key            = "network/vpc-endpoints/terraform.tfstate"
+    region         = local.aws_region
+    dynamodb_table = local.lock_table
+    encrypt        = true
+  }
+}
+
+generate "provider" {
+  path      = "provider.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<-HCL
+    provider "aws" {
+      region = "${local.aws_region}"
+    }
+  HCL
+}
+
+generate "backend" {
+  path      = "backend.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<-HCL
+    terraform {
+      backend "s3" {}
+    }
+  HCL
 }
 
 dependency "vpc" {
@@ -27,27 +72,6 @@ dependencies { paths = ["../vpc"] }
 
 terraform {
   source = "tfr://registry.terraform.io/terraform-aws-modules/vpc/aws//modules/vpc-endpoints?version=5.8.1"
-}
-
-# (Optional) explicit provider pin/region — harmless but nice for clarity
-generate "versions_override" {
-  path      = "versions_override.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<-HCL
-    terraform {
-      required_providers {
-        aws = { source = "hashicorp/aws", version = ">= 5.61.0, < 6.0.0" }
-      }
-    }
-  HCL
-}
-
-generate "provider_region" {
-  path      = "provider_override.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<-HCL
-    provider "aws" { region = "${local.aws_region}" }
-  HCL
 }
 
 inputs = {
@@ -76,6 +100,12 @@ inputs = {
       cidr_blocks = ["0.0.0.0/0"]
     }
   ]
+  
+  # Security group tags
+  security_group_tags = merge(local.common_tags, {
+    Component = "network"
+    Name      = "${local.org}-${local.env}-vpce-sg"
+  })
 
   # ---- Interface endpoints ----
   endpoints = {
@@ -85,21 +115,30 @@ inputs = {
       service_type        = "Interface"
       private_dns_enabled = true
       subnet_ids          = dependency.vpc.outputs.private_subnets
-      tags                = { Name = "${local.org}-${local.env}-vpce-ssm" }
+      tags                = merge(local.common_tags, {
+        Component = "network"
+        Name      = "${local.org}-${local.env}-vpce-ssm"
+      })
     }
     ssmmessages = {
       service             = "ssmmessages"
       service_type        = "Interface"
       private_dns_enabled = true
       subnet_ids          = dependency.vpc.outputs.private_subnets
-      tags                = { Name = "${local.org}-${local.env}-vpce-ssmmessages" }
+      tags                = merge(local.common_tags, {
+        Component = "network"
+        Name      = "${local.org}-${local.env}-vpce-ssmmessages"
+      })
     }
     ec2messages = {
       service             = "ec2messages"
       service_type        = "Interface"
       private_dns_enabled = true
       subnet_ids          = dependency.vpc.outputs.private_subnets
-      tags                = { Name = "${local.org}-${local.env}-vpce-ec2messages" }
+      tags                = merge(local.common_tags, {
+        Component = "network"
+        Name      = "${local.org}-${local.env}-vpce-ec2messages"
+      })
     }
 
     # ECR / STS / CloudWatch Logs — common EKS needs
@@ -108,28 +147,40 @@ inputs = {
       service_type        = "Interface"
       private_dns_enabled = true
       subnet_ids          = dependency.vpc.outputs.private_subnets
-      tags                = { Name = "${local.org}-${local.env}-vpce-ecr-api" }
+      tags                = merge(local.common_tags, {
+        Component = "network"
+        Name      = "${local.org}-${local.env}-vpce-ecr-api"
+      })
     }
     ecr_dkr = {
       service             = "ecr.dkr"
       service_type        = "Interface"
       private_dns_enabled = true
       subnet_ids          = dependency.vpc.outputs.private_subnets
-      tags                = { Name = "${local.org}-${local.env}-vpce-ecr-dkr" }
+      tags                = merge(local.common_tags, {
+        Component = "network"
+        Name      = "${local.org}-${local.env}-vpce-ecr-dkr"
+      })
     }
     sts = {
       service             = "sts"
       service_type        = "Interface"
       private_dns_enabled = true
       subnet_ids          = dependency.vpc.outputs.private_subnets
-      tags                = { Name = "${local.org}-${local.env}-vpce-sts" }
+      tags                = merge(local.common_tags, {
+        Component = "network"
+        Name      = "${local.org}-${local.env}-vpce-sts"
+      })
     }
     logs = {
       service             = "logs"
       service_type        = "Interface"
       private_dns_enabled = true
       subnet_ids          = dependency.vpc.outputs.private_subnets
-      tags                = { Name = "${local.org}-${local.env}-vpce-logs" }
+      tags                = merge(local.common_tags, {
+        Component = "network"
+        Name      = "${local.org}-${local.env}-vpce-logs"
+      })
     }
   }
 
@@ -138,7 +189,10 @@ inputs = {
     s3 = {
       service         = "s3"
       route_table_ids = dependency.vpc.outputs.private_route_table_ids
-      tags            = { Name = "${local.org}-${local.env}-vpce-s3" }
+      tags            = merge(local.common_tags, {
+        Component = "network"
+        Name      = "${local.org}-${local.env}-vpce-s3"
+      })
     }
   }
 

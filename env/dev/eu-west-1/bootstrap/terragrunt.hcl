@@ -1,19 +1,19 @@
 # env/<env>/<region>/bootstrap/terragrunt.hcl
-# Standalone bootstrap (no remote_state include!)
-# Constructs values directly to avoid nested include issues
+# Bootstrap configuration - includes env-level root.hcl (1 level, allowed)
+# No remote_state include since bootstrap creates the state bucket
+
+include "env" {
+  path = "../../root.hcl"
+}
 
 locals {
-  # Hardcode org value to avoid nested include issues in bootstrap
-  # This matches the value in root.hcl: org = "datashift"
-  org = "datashift"
-  
-  # Extract env from path: env/dev/eu-west-1/bootstrap -> dev
-  # Path structure: .../env/<env>/<region>/bootstrap
-  path_parts = split("/", get_terragrunt_dir())
-  env_index  = length(local.path_parts) - 3  # env is 3 levels up from bootstrap
-  env        = local.path_parts[local.env_index]
+  parent = read_terragrunt_config("../../root.hcl")
+  org    = local.parent.locals.org
+  env    = local.parent.locals.env
   
   # Extract region from path: env/dev/eu-west-1/bootstrap -> eu-west-1
+  # Path structure: .../env/<env>/<region>/bootstrap
+  path_parts = split("/", get_terragrunt_dir())
   region_index = length(local.path_parts) - 2  # region is 2 levels up from bootstrap
   aws_region   = local.path_parts[local.region_index]
   
@@ -21,16 +21,10 @@ locals {
   state_bucket = "${get_aws_account_id()}-${local.org}-${local.env}-tfstate-${local.aws_region}"
   lock_table   = "${get_aws_account_id()}-${local.org}-${local.env}-tf-locks"
   
-  # Common tags (Region will be added)
-  common_tags = {
-    Terraform   = "true"
-    ManagedBy   = "Terragrunt"
-    Org         = local.org
-    Env         = local.env
-    Project     = "Soda-Agent"
-    CostCenter  = "Engineering"
-    Region      = local.aws_region
-  }
+  # Common tags from parent, with Region added
+  common_tags = merge(local.parent.locals.common_tags, {
+    Region = local.aws_region
+  })
 }
 
 # Pass org/env, bucket names, and common_tags into the generated main.tf
