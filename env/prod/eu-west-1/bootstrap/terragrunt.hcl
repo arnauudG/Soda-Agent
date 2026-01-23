@@ -1,24 +1,45 @@
 # env/<env>/<region>/bootstrap/terragrunt.hcl
 # Standalone bootstrap (no remote_state include!)
-# Reads org/env/region and bucket names from the parent root.hcl
+# Constructs values directly to avoid nested include issues
 
 locals {
-  parent     = read_terragrunt_config(find_in_parent_folders("root.hcl"))
-  org        = local.parent.locals.org
-  env        = local.parent.locals.env
-  aws_region = local.parent.locals.aws_region
+  # Hardcode org value to avoid nested include issues in bootstrap
+  # This matches the value in root.hcl: org = "datashift"
+  org = "datashift"
   
-  # Use the same bucket and table names as defined in the parent root.hcl
-  state_bucket = local.parent.locals.state_bucket
-  lock_table   = local.parent.locals.lock_table
+  # Extract env from path: env/dev/eu-west-1/bootstrap -> dev
+  # Path structure: .../env/<env>/<region>/bootstrap
+  path_parts = split("/", get_terragrunt_dir())
+  env_index  = length(local.path_parts) - 3  # env is 3 levels up from bootstrap
+  env        = local.path_parts[local.env_index]
+  
+  # Extract region from path: env/dev/eu-west-1/bootstrap -> eu-west-1
+  region_index = length(local.path_parts) - 2  # region is 2 levels up from bootstrap
+  aws_region   = local.path_parts[local.region_index]
+  
+  # Construct bucket and table names matching root.hcl convention
+  state_bucket = "${get_aws_account_id()}-${local.org}-${local.env}-tfstate-${local.aws_region}"
+  lock_table   = "${get_aws_account_id()}-${local.org}-${local.env}-tf-locks"
+  
+  # Common tags (Region will be added)
+  common_tags = {
+    Terraform   = "true"
+    ManagedBy   = "Terragrunt"
+    Org         = local.org
+    Env         = local.env
+    Project     = "Soda-Agent"
+    CostCenter  = "Engineering"
+    Region      = local.aws_region
+  }
 }
 
-# Pass org/env and bucket names into the generated main.tf
+# Pass org/env, bucket names, and common_tags into the generated main.tf
 inputs = {
   org          = local.org
   env          = local.env
   state_bucket = local.state_bucket
   lock_table   = local.lock_table
+  common_tags  = local.common_tags
 }
 
 terraform {
@@ -37,7 +58,7 @@ generate "provider" {
       required_providers {
         aws = {
           source  = "hashicorp/aws"
-          version = "~> 5.60"
+          version = ">= 5.61.0, < 6.0.0"
         }
       }
     }
@@ -57,16 +78,19 @@ generate "bootstrap" {
     variable "env" { type = string }
     variable "state_bucket" { type = string }
     variable "lock_table" { type = string }
+    variable "common_tags" {
+      type = map(string)
+      default = {}
+    }
 
     resource "aws_s3_bucket" "tfstate" {
       bucket        = var.state_bucket
       force_destroy = false
-      tags = {
-        Terraform = "true"
+      
+      tags = merge(var.common_tags, {
         Component = "bootstrap"
-        Org       = var.org
-        Env       = var.env
-      }
+        Name      = var.state_bucket
+      })
     }
 
     # Enforce bucket-owner ownership (modern default / best practice)
@@ -79,7 +103,39 @@ generate "bootstrap" {
 
     resource "aws_s3_bucket_versioning" "tfstate" {
       bucket = aws_s3_bucket.tfstate.id
-      versioning_configuration { status = "Enabled" }
+      versioning_configuration {
+        status = "Enabled"
+        # MFA delete disabled by default (requires MFA device)
+        # Enable via AWS Console if needed for extra security
+      }
+    }
+
+    # Lifecycle policy to manage old state file versions
+    resource "aws_s3_bucket_lifecycle_configuration" "tfstate" {
+      bucket = aws_s3_bucket.tfstate.id
+
+      rule {
+        id     = "delete-old-versions"
+        status = "Enabled"
+
+        filter {}  # Apply to all objects
+
+        noncurrent_version_expiration {
+          noncurrent_days = 90  # Delete non-current versions after 90 days
+        }
+      }
+
+      rule {
+        id     = "transition-to-glacier"
+        status = "Enabled"
+
+        filter {}  # Apply to all objects
+
+        noncurrent_version_transition {
+          noncurrent_days = 30
+          storage_class   = "GLACIER"
+        }
+      }
     }
 
     resource "aws_s3_bucket_server_side_encryption_configuration" "tfstate" {
@@ -122,12 +178,20 @@ generate "bootstrap" {
         type = "S"
       }
 
-      tags = {
-        Terraform = "true"
-        Component = "bootstrap"
-        Org       = var.org
-        Env       = var.env
+      # Point-in-time recovery for disaster recovery
+      point_in_time_recovery {
+        enabled = true
       }
+
+      # Server-side encryption
+      server_side_encryption {
+        enabled = true
+      }
+
+      tags = merge(var.common_tags, {
+        Component = "bootstrap"
+        Name      = var.lock_table
+      })
     }
 
     output "state_bucket" { value = aws_s3_bucket.tfstate.bucket }

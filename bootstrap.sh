@@ -60,14 +60,23 @@ cd "$BASE_DIR" || {
 print_status "Working directory: $(pwd)"
 
 # Check if bootstrap is already enabled
+SKIP_ALREADY_FALSE=false
 if grep -q "skip = false" bootstrap/terragrunt.hcl; then
-    print_warning "Bootstrap is already enabled for this environment!"
-    print_warning "If you're sure you need to re-bootstrap, manually set 'skip = false' in bootstrap/terragrunt.hcl"
-    exit 0
+    print_warning "Bootstrap is already enabled (skip = false) for this environment!"
+    print_warning "Proceeding with bootstrap..."
+    SKIP_ALREADY_FALSE=true
 fi
 
-# Check if S3 bucket already exists
-BUCKET_NAME="datashift-$ENVIRONMENT-tfstate-$(aws sts get-caller-identity --query Account --output text)-eu-west-1"
+# Get AWS account ID and construct bucket/table names matching root.hcl convention
+# Format: <account>-<org>-<env>-tfstate-<region>
+# Format: <account>-<org>-<env>-tf-locks
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+ORG="datashift"
+REGION="eu-west-1"
+
+BUCKET_NAME="${ACCOUNT_ID}-${ORG}-${ENVIRONMENT}-tfstate-${REGION}"
+TABLE_NAME="${ACCOUNT_ID}-${ORG}-${ENVIRONMENT}-tf-locks"
+
 print_status "Checking if S3 bucket already exists: $BUCKET_NAME"
 
 if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
@@ -81,10 +90,9 @@ if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
 fi
 
 # Check if DynamoDB table already exists
-TABLE_NAME="datashift-$ENVIRONMENT-tf-locks"
 print_status "Checking if DynamoDB table already exists: $TABLE_NAME"
 
-if aws dynamodb describe-table --table-name "$TABLE_NAME" --region eu-west-1 2>/dev/null; then
+if aws dynamodb describe-table --table-name "$TABLE_NAME" --region "$REGION" 2>/dev/null; then
     print_warning "DynamoDB table already exists: $TABLE_NAME"
     print_warning "This environment may already be bootstrapped!"
     read -p "Do you want to continue anyway? (yes/no): " -r
@@ -107,26 +115,32 @@ if [[ ! $REPLY =~ ^BOOTSTRAP$ ]]; then
     exit 0
 fi
 
-# Enable bootstrap
-print_status "Enabling bootstrap..."
+# Enable bootstrap (if not already enabled)
 cd bootstrap || {
     print_error "Bootstrap directory not found"
     exit 1
 }
 
-# Temporarily enable bootstrap
-sed -i.bak 's/skip = true/skip = false/' terragrunt.hcl
+if [ "$SKIP_ALREADY_FALSE" = false ]; then
+    print_status "Enabling bootstrap..."
+    sed -i.bak 's/skip = true/skip = false/' terragrunt.hcl
+else
+    print_status "Bootstrap already enabled, proceeding..."
+fi
 
 # Run bootstrap
 print_status "Running bootstrap..."
 terragrunt apply --auto-approve
 
-# Disable bootstrap again
-print_status "Disabling bootstrap..."
-sed -i.bak 's/skip = false/skip = true/' terragrunt.hcl
-
-# Clean up backup files
-rm -f terragrunt.hcl.bak
+# Disable bootstrap again (only if we enabled it)
+if [ "$SKIP_ALREADY_FALSE" = false ]; then
+    print_status "Disabling bootstrap..."
+    sed -i.bak 's/skip = false/skip = true/' terragrunt.hcl
+    # Clean up backup files
+    rm -f terragrunt.hcl.bak
+else
+    print_status "Leaving skip = false (bootstrap was already enabled)"
+fi
 
 print_success "Bootstrap completed successfully!"
 print_success "Environment: $ENVIRONMENT"

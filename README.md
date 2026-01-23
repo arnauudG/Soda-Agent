@@ -77,8 +77,16 @@ This structure allows:
 
 The bootstrap process creates:
 - **S3 bucket** for Terraform state storage
+  - Versioning enabled
+  - Encryption at rest (AES256)
+  - Lifecycle policies (Glacier transition after 30 days, deletion after 90 days)
+  - Public access blocked
+  - TLS-only access enforced
 - **DynamoDB table** for state locking
-- **IAM policies** and configurations
+  - Point-in-time recovery enabled
+  - Server-side encryption enabled
+  - Pay-per-request billing mode
+- **Consistent tagging** using common_tags from parent configuration
 
 ### **When to Bootstrap:**
 - **New environment** (dev, prod)
@@ -474,10 +482,20 @@ export SODA_IMAGE_APIKEY_SECRET="your-image-secret"
 - **Phase-based Deployment**: Improved phase-by-phase deployment with proper dependency resolution
 - **Bootstrap Safety**: Added multiple safety checks and confirmations for bootstrap process
 
+### **Bootstrap Module Enhancements**
+- **S3 Lifecycle Management**: Automatic transition to Glacier after 30 days, deletion after 90 days
+- **DynamoDB Point-in-Time Recovery**: Enabled for disaster recovery
+- **DynamoDB Encryption**: Server-side encryption enabled
+- **Consistent Tagging**: Uses common_tags from parent configuration
+- **Provider Version**: Updated to match other modules (>= 5.61.0, < 6.0.0)
+
 ## **Notes**
 
 - **Bootstrap**: Set to `skip = true` by default. Run `./bootstrap.sh <env>` for new environments.
 - **State Management**: Uses S3 backend with DynamoDB locking (created by bootstrap).
+  - S3 versioning and lifecycle policies for cost optimization
+  - DynamoDB point-in-time recovery for disaster recovery
+  - Both resources use consistent tagging from parent configuration
 - **Provider Versions**: Pinned to specific versions for stability.
 - **Tags**: Consistent tagging strategy across all resources.
 - **Security**: VPC endpoints for private communication, minimal public access.
