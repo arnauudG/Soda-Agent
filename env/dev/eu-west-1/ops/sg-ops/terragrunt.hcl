@@ -1,11 +1,57 @@
-include "root" { path = find_in_parent_folders("root.hcl") }
+# env/<env>/<region>/ops/sg-ops/terragrunt.hcl
+# Security Group Ops configuration - includes env-level root.hcl (1 level, avoids nested includes)
+
+include "env" {
+  path = "../../../root.hcl"
+}
 
 locals {
-  parent     = read_terragrunt_config(find_in_parent_folders("root.hcl"))
-  org        = local.parent.locals.org
-  env        = local.parent.locals.env
-  aws_region = local.parent.locals.aws_region
-  common_tags = local.parent.locals.common_tags
+  parent = read_terragrunt_config("../../../root.hcl")
+  org    = local.parent.locals.org
+  env    = local.parent.locals.env
+  
+  # Extract region from path: env/dev/eu-west-1/ops/sg-ops
+  path_parts = split("/", get_terragrunt_dir())
+  region_index = length(local.path_parts) - 3  # region is 3 levels up from sg-ops
+  aws_region   = local.path_parts[local.region_index]
+  
+  # Common tags from parent, with Region added
+  common_tags = merge(local.parent.locals.common_tags, {
+    Region = local.aws_region
+  })
+  
+  # State bucket and lock table names
+  state_bucket = "${get_aws_account_id()}-${local.org}-${local.env}-tfstate-${local.aws_region}"
+  lock_table   = "${get_aws_account_id()}-${local.org}-${local.env}-tf-locks"
+}
+
+remote_state {
+  backend = "s3"
+  config = {
+    bucket         = local.state_bucket
+    key            = "ops/sg-ops/terraform.tfstate"
+    region         = local.aws_region
+    dynamodb_table = local.lock_table
+    encrypt        = true
+  }
+}
+
+generate "provider" {
+  path      = "provider.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<-HCL
+    provider "aws" { region = "${local.aws_region}" }
+  HCL
+}
+
+generate "backend" {
+  path      = "backend.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<-HCL
+    terraform {
+      backend "s3" {}
+    }
+  HCL
 }
 
 dependency "vpc" {

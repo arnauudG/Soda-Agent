@@ -1,19 +1,65 @@
 # env/<env>/<region>/ops/ec2-ops/terragrunt.hcl
-include "root" { path = find_in_parent_folders("root.hcl") }
+# EC2 Ops configuration - includes env-level root.hcl (1 level, avoids nested includes)
+
+include "env" {
+  path = "../../../root.hcl"
+}
 
 locals {
-  parent       = read_terragrunt_config(find_in_parent_folders("root.hcl"))
-  org          = local.parent.locals.org
-  env          = local.parent.locals.env
-  aws_region   = local.parent.locals.aws_region
+  parent = read_terragrunt_config("../../../root.hcl")
+  org    = local.parent.locals.org
+  env    = local.parent.locals.env
+  
+  # Extract region from path: env/dev/eu-west-1/ops/ec2-ops
+  path_parts = split("/", get_terragrunt_dir())
+  region_index = length(local.path_parts) - 3  # region is 3 levels up from ec2-ops
+  aws_region   = local.path_parts[local.region_index]
+  
+  # Common tags from parent, with Region added
+  common_tags = merge(local.parent.locals.common_tags, {
+    Region = local.aws_region
+  })
+  
   modules_root = local.parent.locals.modules_root
-  common_tags  = local.parent.locals.common_tags
 
   # Environment-specific instance configuration
   instance_config = {
     instance_type = "t3.micro"  # Dev: smaller instance
     volume_size   = 16
   }
+  
+  # State bucket and lock table names
+  state_bucket = "${get_aws_account_id()}-${local.org}-${local.env}-tfstate-${local.aws_region}"
+  lock_table   = "${get_aws_account_id()}-${local.org}-${local.env}-tf-locks"
+}
+
+remote_state {
+  backend = "s3"
+  config = {
+    bucket         = local.state_bucket
+    key            = "ops/ec2-ops/terraform.tfstate"
+    region         = local.aws_region
+    dynamodb_table = local.lock_table
+    encrypt        = true
+  }
+}
+
+generate "provider" {
+  path      = "provider.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<-HCL
+    provider "aws" { region = "${local.aws_region}" }
+  HCL
+}
+
+generate "backend" {
+  path      = "backend.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<-HCL
+    terraform {
+      backend "s3" {}
+    }
+  HCL
 }
 
 generate "versions_override" {
@@ -84,10 +130,6 @@ inputs = {
   vpc_security_group_ids = [dependency.sg_ops.outputs.security_group_id]
 
   enable_monitoring = true
-
-  # Instance lifecycle management
-  disable_api_termination = false  # Allow termination for cleanup
-  disable_api_stop        = false  # Allow stop/start for cost optimization
 
   root_block_device = [{
     volume_size           = local.instance_config.volume_size

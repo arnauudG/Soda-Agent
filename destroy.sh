@@ -32,7 +32,7 @@ print_error() {
 # Check if environment is provided
 if [ $# -eq 0 ]; then
     print_error "Usage: $0 <environment> [phase]"
-    print_error "Environment: dev, prod, gen"
+    print_error "Environment: dev, prod"
     print_error "Phase: 1-7 (optional, destroy specific phase only)"
     print_error "Example: $0 prod        # Destroy all phases"
     print_error "Example: $0 prod 7      # Destroy phase 7 only (Soda Agent)"
@@ -43,9 +43,9 @@ ENVIRONMENT=$1
 PHASE=${2:-0}  # Default to 0 (all phases)
 
 # Validate environment
-if [[ ! "$ENVIRONMENT" =~ ^(dev|prod|gen)$ ]]; then
+if [[ ! "$ENVIRONMENT" =~ ^(dev|prod)$ ]]; then
     print_error "Invalid environment: $ENVIRONMENT"
-    print_error "Valid environments: dev, prod, gen"
+    print_error "Valid environments: dev, prod"
     exit 1
 fi
 
