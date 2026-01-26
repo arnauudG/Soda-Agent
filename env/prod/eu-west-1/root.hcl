@@ -7,10 +7,19 @@ include "env" {
 }
 
 locals {
-  parent     = read_terragrunt_config("../root.hcl")
-  org        = local.parent.locals.org
-  env        = local.parent.locals.env
-  aws_region = "eu-west-1"  # Region is defined at the region level
+  # This file is at env/prod/eu-west-1/root.hcl, parent is at env/prod/root.hcl
+  # The include block uses "../root.hcl" which is relative to this file
+  # For read_terragrunt_config, we need to construct the path properly
+  # Construct path to env-level root.hcl
+  calling_dir = get_terragrunt_dir()
+  path_parts = split("/", local.calling_dir)
+  region_idx = index(local.path_parts, "eu-west-1")
+  # If region found, slice to env level; otherwise try going up from parent
+  env_dir = local.region_idx >= 0 ? join("/", slice(local.path_parts, 0, local.region_idx)) : "${get_parent_terragrunt_dir()}/.."
+  parent = read_terragrunt_config("${local.env_dir}/root.hcl")
+  org           = local.parent.locals.org
+  env           = local.parent.locals.env
+  aws_region    = "eu-west-1"  # Region is defined at the region level
   common_tags = merge(local.parent.locals.common_tags, {
     Region = local.aws_region
   })

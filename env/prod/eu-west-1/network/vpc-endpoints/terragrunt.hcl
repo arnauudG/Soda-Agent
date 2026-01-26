@@ -1,4 +1,4 @@
-# env/<env>/<region>/network/vpc-endpoints/terragrunt.hcl
+# env/<env>/<region>/network/network/vpc-endpoints/terragrunt.hcl
 # VPC Endpoints configuration - includes env-level root.hcl (1 level, avoids nested includes)
 
 include "env" {
@@ -10,9 +10,9 @@ locals {
   org    = local.parent.locals.org
   env    = local.parent.locals.env
   
-  # Extract region from path: env/prod/eu-west-1/network/vpc-endpoints
+  # Extract region from path: env/prod/eu-west-1/network/network/vpc-endpoints
   path_parts = split("/", get_terragrunt_dir())
-  region_index = length(local.path_parts) - 3  # region is 3 levels up from vpc-endpoints
+  region_index = length(local.path_parts) - 3  # region is 3 levels up from network/vpc-endpoints
   aws_region   = local.path_parts[local.region_index]
   
   # Common tags from parent, with Region added
@@ -29,7 +29,7 @@ remote_state {
   backend = "s3"
   config = {
     bucket         = local.state_bucket
-    key            = "network/vpc-endpoints/terraform.tfstate"
+    key            = "network/network/vpc-endpoints/terraform.tfstate"
     region         = local.aws_region
     dynamodb_table = local.lock_table
     encrypt        = true
@@ -64,14 +64,14 @@ dependency "vpc" {
     private_subnets         = ["subnet-a", "subnet-b", "subnet-c"]
     private_route_table_ids = ["rtb-a", "rtb-b", "rtb-c"] # needed for S3 gateway endpoint
   }
-  mock_outputs_allowed_terraform_commands = ["init", "plan"]
+  mock_outputs_allowed_terraform_commands = ["init", "plan", "destroy"]
 }
 
 # Ensure proper ordering
 dependencies { paths = ["../vpc"] }
 
 terraform {
-  source = "tfr://registry.terraform.io/terraform-aws-modules/vpc/aws//modules/vpc-endpoints?version=5.8.1"
+  source = "${local.parent.locals.modules_root}/network/vpc-endpoints"
 }
 
 inputs = {
@@ -81,7 +81,6 @@ inputs = {
   create_security_group      = true
   security_group_name        = "${local.org}-${local.env}-vpce-sg"
   security_group_description = "Allow HTTPS from VPC to VPC Endpoints"
-  security_group_vpc_id      = dependency.vpc.outputs.vpc_id
   security_group_rules = [
     {
       type        = "ingress"
@@ -182,14 +181,13 @@ inputs = {
         Name      = "${local.org}-${local.env}-vpce-logs"
       })
     }
-  }
 
-  # ---- Gateway endpoint for S3 (attach to private route tables) ----
-  gateway_endpoints = {
+    # ---- Gateway endpoint for S3 (attach to private route tables) ----
     s3 = {
-      service         = "s3"
-      route_table_ids = dependency.vpc.outputs.private_route_table_ids
-      tags            = merge(local.common_tags, {
+      service             = "s3"
+      service_type        = "Gateway"
+      route_table_ids     = dependency.vpc.outputs.private_route_table_ids
+      tags                = merge(local.common_tags, {
         Component = "network"
         Name      = "${local.org}-${local.env}-vpce-s3"
       })

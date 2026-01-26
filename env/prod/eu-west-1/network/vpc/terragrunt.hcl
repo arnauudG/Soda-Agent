@@ -57,7 +57,7 @@ generate "backend" {
 }
 
 terraform {
-  source = "tfr://registry.terraform.io/terraform-aws-modules/vpc/aws?version=5.8.1"
+  source = "${local.parent.locals.modules_root}/network/vpc"
 }
 
 dependencies {
@@ -139,11 +139,14 @@ inputs = {
   }
 
   # Default Security Group - restrict to deny all by default
-  manage_default_security_group_rules = true
-  default_security_group_ingress     = []  # No ingress by default
-  default_security_group_egress      = []  # No egress by default
-  default_security_group_name        = "${local.prefix}-default-sg"
-  default_security_group_description = "Default security group for ${local.prefix}-vpc - all traffic denied by default"
+  manage_default_security_group = true
+  default_security_group_ingress = []  # No ingress by default
+  default_security_group_egress  = []  # No egress by default
+  default_security_group_name    = "${local.prefix}-default-sg"
+  default_security_group_tags    = {
+    Name        = "${local.prefix}-default-sg"
+    Description = "Default security group for ${local.prefix}-vpc - all traffic denied by default"
+  }
   
   # Base tags on everything - merge common tags with component-specific tags
   tags = merge(local.common_tags, {

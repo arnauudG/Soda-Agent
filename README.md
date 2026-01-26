@@ -271,12 +271,26 @@ export SODA_LOG_LEVEL="INFO"   # ERROR, WARN, INFO, DEBUG, TRACE
 ```
 
 ### **2. Dependency Errors**
-**Error**: `detected no outputs` or `Unknown variable: dependency`
+**Error**: `detected no outputs` or `Unknown variable: dependency` or `There is no variable named "dependency"`
 
 **Causes & Solutions**:
 - **During initial deployment**: This is normal when dependencies haven't been applied yet. Use the automated deployment scripts.
+- **During destroy operations**: When a dependency has already been destroyed, Terragrunt can't read its outputs. Add `"destroy"` to `mock_outputs_allowed_terraform_commands`.
 - **Corrupted terragrunt.hcl files**: Check for error messages accidentally pasted into configuration files.
 - **Missing mock outputs**: Ensure `dependency` blocks have proper `mock_outputs` for validation.
+
+**Fix for destroy operations**:
+Update dependency blocks to allow mock outputs during destroy:
+```hcl
+dependency "vpc" {
+  config_path = "../vpc"
+  mock_outputs = {
+    vpc_id = "vpc-123456"
+    # ... other mock outputs
+  }
+  mock_outputs_allowed_terraform_commands = ["init", "plan", "destroy"]  # Add "destroy"
+}
+```
 
 **Fix corrupted files**:
 ```bash
@@ -378,6 +392,103 @@ terragrunt destroy --auto-approve
 # Disable after destruction
 sed -i.bak 's/skip = false/skip = true/' terragrunt.hcl
 ```
+
+### **12. Stuck VPC Destruction & Orphaned Resources**
+**Error**: VPC stuck in "Still destroying..." state, or `DependencyViolation` when manually deleting resources
+
+**Symptoms**:
+- Terraform destroy hangs on VPC destruction for extended periods (>2 minutes)
+- Manual `aws ec2 delete-vpc` fails with `DependencyViolation`
+- Resources exist in AWS but not in Terraform state (orphaned resources)
+
+**Solution - Step 1: Unlock State Lock**
+If Terraform is stuck, first unlock the state:
+```bash
+cd env/<env>/eu-west-1/network/vpc
+# Get the lock ID from the error message, then:
+terragrunt force-unlock -force <lock-id>
+```
+
+**Solution - Step 2: Identify Blocking Resources**
+Check what's preventing VPC deletion:
+```bash
+VPC_ID="vpc-xxxxxxxxx"  # Replace with your VPC ID
+REGION="eu-west-1"       # Replace with your region
+
+# Check for VPC endpoints
+aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=$VPC_ID" --region $REGION --query 'VpcEndpoints[*].[VpcEndpointId,ServiceName,State]' --output table
+
+# Check for network interfaces
+aws ec2 describe-network-interfaces --filters "Name=vpc-id,Values=$VPC_ID" --region $REGION --query 'NetworkInterfaces[*].[NetworkInterfaceId,Status,InterfaceType,Description]' --output table
+
+# Check for subnets
+aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --region $REGION --query 'Subnets[*].[SubnetId,State,AvailabilityZone]' --output table
+
+# Check for security groups (non-default)
+aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC_ID" --region $REGION --query 'SecurityGroups[?GroupName!=`default`].[GroupId,GroupName]' --output table
+
+# Check for Internet Gateway
+aws ec2 describe-internet-gateways --filters "Name=attachment.vpc-id,Values=$VPC_ID" --region $REGION --query 'InternetGateways[*].[InternetGatewayId,State]' --output table
+
+# Check for NAT Gateways
+aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$VPC_ID" --region $REGION --query 'NatGateways[*].[NatGatewayId,State,SubnetId]' --output table
+
+# Check for route tables
+aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID" --region $REGION --query 'RouteTables[*].[RouteTableId,Associations[0].Main]' --output table
+```
+
+**Solution - Step 3: Manual Cleanup (Delete in Order)**
+Delete resources in dependency order:
+
+1. **Delete VPC Endpoints** (if any):
+```bash
+aws ec2 delete-vpc-endpoint --vpc-endpoint-id <endpoint-id> --region $REGION
+```
+
+2. **Delete Subnets** (if any):
+```bash
+aws ec2 delete-subnet --subnet-id <subnet-id> --region $REGION
+```
+
+3. **Delete Security Groups** (non-default):
+```bash
+aws ec2 delete-security-group --group-id <sg-id> --region $REGION
+```
+
+4. **Delete NAT Gateways** (if any):
+```bash
+aws ec2 delete-nat-gateway --nat-gateway-id <nat-gateway-id> --region $REGION
+# Wait for NAT Gateway to be deleted (may take a few minutes)
+```
+
+5. **Detach and Delete Internet Gateway** (if any):
+```bash
+# First detach
+aws ec2 detach-internet-gateway --internet-gateway-id <igw-id> --vpc-id $VPC_ID --region $REGION
+# Then delete
+aws ec2 delete-internet-gateway --internet-gateway-id <igw-id> --region $REGION
+```
+
+6. **Delete VPC**:
+```bash
+aws ec2 delete-vpc --vpc-id $VPC_ID --region $REGION
+```
+
+**Solution - Step 4: Clean Up Terraform State (if needed)**
+If resources were orphaned (exist in AWS but not in Terraform state), check and clean state:
+```bash
+cd env/<env>/eu-west-1/network/vpc
+# List all resources in state
+terragrunt state list
+
+# If orphaned resources appear in state, remove them:
+terragrunt state rm 'module.vpc.aws_vpc.this[0]'  # Adjust resource address as needed
+```
+
+**Prevention**:
+- Always destroy infrastructure in reverse dependency order using `./destroy.sh <env>`
+- Ensure VPC endpoints are destroyed before VPC (Phase 2 before Phase 1)
+- Use `mock_outputs_allowed_terraform_commands = ["init", "plan", "destroy"]` in dependency blocks to allow mock outputs during destroy operations
 
 ## **Cleanup & Maintenance**
 
@@ -543,8 +654,10 @@ export SODA_IMAGE_APIKEY_SECRET="your-image-secret"
 
 ### **Terragrunt Configuration Fixes**
 - **Mock Outputs**: Added proper mock outputs for all dependency blocks to enable validation
+- **Mock Outputs During Destroy**: Updated `mock_outputs_allowed_terraform_commands` to include `"destroy"` to allow dependencies to work when parent resources are already destroyed
 - **Dependency Ordering**: Ensured correct `dependencies` and `dependency` block usage
 - **Configuration Validation**: Fixed corrupted terragrunt.hcl files that contained error messages
+- **Orphaned Resource Cleanup**: Added comprehensive troubleshooting guide for stuck VPC destruction and manual cleanup procedures
 
 ### **Deployment Scripts**
 - **Automated Deployment**: Enhanced deployment scripts with better error handling
@@ -564,6 +677,10 @@ export SODA_IMAGE_APIKEY_SECRET="your-image-secret"
 - **Standalone Configuration**: Bootstrap uses direct value construction to avoid nested include issues
 
 ### **Ops Infrastructure Fine-Tuning (January 2025)**
+- **Configuration Architecture**:
+  - Uses direct path includes to env-level `root.hcl` (e.g., `../../../root.hcl` for 3-level deep modules)
+  - Proper state management with `remote_state`, `provider`, and `backend` generation blocks
+  - Region extraction from path for consistency
 - **Security Group Hardening**:
   - Restricted HTTPS egress from `0.0.0.0/0` to VPC CIDR block (uses VPC endpoints for all AWS service communication)
   - Added HTTP (port 80) egress for package updates to AWS repositories
@@ -571,11 +688,511 @@ export SODA_IMAGE_APIKEY_SECRET="your-image-secret"
   - All traffic now routes through VPC endpoints for enhanced security and cost control
 - **EC2 Instance Enhancements**:
   - Added `AmazonEC2ContainerRegistryReadOnly` IAM policy for ECR access (pulling container images)
+  - Added `CloudWatchLogsFullAccess` IAM policy for better observability and log management
   - Enhanced root block device configuration with explicit GP3 IOPS (3000) and throughput (125 MB/s)
   - Added `delete_on_termination = true` for proper cleanup
   - Improved instance metadata security with `http_put_response_hop_limit = 1` and `instance_metadata_tags = enabled`
-  - Added lifecycle management settings (`disable_api_termination`, `disable_api_stop`) for cost optimization
+  - **CPU Credit Specification**: Dev uses `unlimited` credits (prevents CPU throttling), Prod uses `standard` credits (predictable costs)
+  - **Instance Placement**: Explicit tenancy configuration for cost optimization
+  - **EBS Optimization**: Explicit configuration for cost savings
+- **Cost Optimizations**:
+  - **Dev**: `t3.micro` instance (smallest available), unlimited CPU credits
+  - **Prod**: `t3.small` instance, standard CPU credits
+  - GP3 volumes with baseline IOPS/throughput (minimum for dev, baseline for prod)
 - **Applied to Both Environments**: All improvements applied consistently to both dev and prod environments
+
+### **EKS Cluster Fine-Tuning (January 2025)**
+- **Configuration Architecture**:
+  - Uses direct path includes to env-level `root.hcl` (e.g., `../../root.hcl` for 2-level deep modules)
+  - Proper state management with `remote_state`, `provider`, and `backend` generation blocks
+  - Region extraction from path for consistency
+- **Node Group Enhancements**:
+  - **Disk Configuration**: GP3 disks with explicit IOPS/throughput (20GB dev, 50GB prod)
+  - **Instance Metadata Security**: IMDSv2 required, hop limit set to 2
+  - **Node Labels**: Environment, NodeGroup, ManagedBy for better pod scheduling
+  - **Update Configuration**: Zero-downtime updates (50% dev, 33% prod max unavailable)
+- **Security Improvements**:
+  - **Encryption**: Encrypts `secrets` at rest (AWS EKS limitation - only secrets supported)
+  - **Metadata Options**: IMDSv2 required on all nodes
+- **Cluster Addons**:
+  - **CoreDNS**: Resource limits configured (dev: 200m CPU/256Mi mem, prod: 500m CPU/512Mi mem)
+  - **VPC CNI**: Prefix delegation enabled for better IP management
+  - **EBS CSI Driver**: Added for persistent volumes support
+- **Cost Optimizations**:
+  - **Dev**: `t3.micro` instances, `min_size=0` (can scale to zero with cluster autoscaler), SPOT pricing
+  - **Prod**: `t3.small` instances (reduced from t3.medium/t3.large), SPOT pricing (~70% savings)
+  - **Documentation**: Added Cluster Autoscaler and kube-downscaler installation instructions in config files
+- **Network Connectivity**:
+  - **External Data Sources**: EKS nodes can reach external data sources via NAT Gateway
+  - **Default Egress**: EKS module provides default egress rules (all outbound allowed)
+  - **Traffic Flow**: Pods → Node SG → NAT Gateway → Internet → External Data Sources
+
+### **Cluster Capacity and Resource Configuration (January 2025)**
+- **Current Configuration**:
+  - **Node Type**: `t3.small` (2 vCPU, 2GB RAM)
+  - **Capacity**: Supports up to 6 scans in parallel
+  - **Resource Allocation**:
+    - Soda Agent Orchestrator: 500m CPU, 512Mi memory
+    - CoreDNS (2 pods): 200m CPU, 140Mi memory
+    - System pods (VPC CNI, kube-proxy): ~150m CPU
+  - **Available Resources**: ~1.15 CPU cores, ~1.3GB memory available for scan jobs
+- **Resource Monitoring**:
+  ```bash
+  # Check node capacity
+  kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.capacity.cpu}{"\t"}{.status.capacity.memory}{"\n"}{end}'
+  
+  # Check allocated resources
+  kubectl describe node | grep -A 10 "Allocated resources:"
+  
+  # Check pod resource requests/limits
+  kubectl get pods --all-namespaces -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{.spec.containers[0].resources.requests.cpu}{"\t"}{.spec.containers[0].resources.requests.memory}{"\n"}{end}'
+  ```
+- **Scaling Considerations**:
+  - Current setup is sufficient for up to 6 parallel scans
+  - If more capacity is needed, consider:
+    - Increasing `max_size` in node group configuration
+    - Upgrading to `t3.medium` (2 vCPU, 4GB RAM) for more memory
+    - Installing Cluster Autoscaler for automatic scaling
+
+### **Soda Agent Instruction Fetching Bug (January 2025)**
+- **Issue**: Agent version `v2.1.19` (image: `registry.cloud.soda.io/sodadata/agent-orchestrator:v2.1.19`) experiences `NullPointerException` when fetching instructions from Soda Cloud
+- **Symptoms**:
+  - Agent pod is running and healthy (1/1 Ready, 0 restarts)
+  - Agent successfully registered and connected to Soda Cloud
+  - Repeated errors in logs: `NullPointerException: Cannot invoke "io.soda.agent.orchestrator.cloud.api.CoreAgentInstructionDTO.getId()" because "dto" is null`
+  - Agent cannot receive new instructions (including data source connection instructions)
+- **Root Cause**: Soda Cloud API returns null entries in the instructions array, and the agent code doesn't filter nulls before processing
+- **Impact**: 
+  - Agent cannot fetch new instructions from Soda Cloud
+  - Data source connections (e.g., Snowflake) cannot be processed
+  - Existing instructions may still be processed if they were fetched before the bug occurred
+- **Troubleshooting Steps**:
+  1. **Check Agent Status**:
+     ```bash
+     kubectl get pods -n soda-agent
+     kubectl logs -n soda-agent -l app.kubernetes.io/name=soda-agent --tail=50
+     ```
+  2. **Verify Agent Registration**:
+     ```bash
+     kubectl logs -n soda-agent -l app.kubernetes.io/name=soda-agent | grep -E "(registered|Connected|Agent ID)"
+     ```
+  3. **Check for Successful Instruction Fetches**:
+     ```bash
+     kubectl logs -n soda-agent -l app.kubernetes.io/name=soda-agent | grep -E "(Fetched.*instructions|Received cloud instruction)"
+     ```
+  4. **Restart Agent Pod** (temporary workaround):
+     ```bash
+     kubectl delete pod -n soda-agent -l app.kubernetes.io/name=soda-agent
+     ```
+  5. **Check Agent Version**:
+     ```bash
+     kubectl describe pod -n soda-agent -l app.kubernetes.io/name=soda-agent | grep "Image:"
+     ```
+- **Solutions**:
+  1. **Contact Soda Support**: Report the bug with:
+     - Agent version: `v2.1.19`
+     - Error: `NullPointerException` in `CloudMapper.toInstruction()` at line 63
+     - Agent name: `datashift-dev-eu-west-1-agent` (or your agent name)
+     - Agent ID: Check logs for "Agent registered successfully in Soda Cloud: '<agent-id>'"
+  2. **Check for Newer Agent Version**:
+     - Current chart version: `""` (latest)
+     - Current agent image: `registry.cloud.soda.io/sodadata/agent-orchestrator:v2.1.19`
+     - Check available chart versions:
+       ```bash
+       helm repo update soda-agent
+       helm search repo soda-agent/soda-agent --versions
+       ```
+     - Check available agent image versions (requires Soda registry access):
+       ```bash
+       # Note: This requires authentication to registry.cloud.soda.io
+       # Check Soda documentation for available agent versions
+       ```
+     - Update chart version in `env/*/eu-west-1/addons/soda-agent/terragrunt.hcl`:
+       ```hcl
+       chart_version = "X.Y.Z"  # Specify newer version if available
+       ```
+     - After updating, redeploy:
+       ```bash
+       cd env/dev/eu-west-1/addons/soda-agent
+       terragrunt apply
+       ```
+  3. **Verify in Soda Cloud UI**:
+     - Confirm agent appears as online/connected
+     - Verify data source configuration is correct
+     - Check if instructions are queued (they won't process until bug is fixed)
+- **Workaround**: The agent continues to run and process previously fetched instructions, but cannot fetch new ones until the bug is fixed by Soda
+- **Note**: This is an application bug in the Soda Agent code, not an infrastructure issue. The deployment configuration is correct.
+
+## **Soda Agent Deployment Requirements (Official Documentation)**
+
+### **Prerequisites**
+- AWS account with permissions to create/access EKS cluster
+- `kubectl` v1.22 or v1.23 installed
+- `helm` installed
+- Enterprise plan (self-hosted agents require Enterprise plan; contact https://www.soda.io/contact)
+
+### **Network Requirements - URLs to Whitelist**
+
+**Required Outbound Access (Port 443/HTTPS)**:
+
+**For Soda EU Region** (`https://cloud.soda.io`):
+- `cloud.soda.io` (Soda Cloud API)
+- `collect.soda.io` (Soda Cloud collector)
+- `registry.cloud.soda.io` (Soda container registry)
+- `soda-cloud-platform-registry.s3.eu-west-1.amazonaws.com` (Soda platform registry)
+- `*.docker.io` (Docker Hub for base images)
+
+**For Soda US Region** (`https://cloud.us.soda.io`):
+- `cloud.us.soda.io` (Soda Cloud API)
+- `collect.soda.io` (Soda Cloud collector)
+- `registry.us.soda.io` (Soda container registry)
+- `soda-cloud-us-platform-registry.s3.us-west-2.amazonaws.com` (Soda platform registry)
+- `*.docker.io` (Docker Hub for base images)
+
+**Current Configuration Status**:
+- ✅ EKS node security group allows all outbound traffic (0.0.0.0/0) on all ports
+- ✅ Port 443 accessible to `cloud.soda.io` and `collect.soda.io` (verified)
+- ✅ DNS resolution working for all required FQDNs
+- ✅ Network path: Pods → Node SG → NAT Gateway → Internet → Soda Cloud
+
+**Note**: The agent only requires outbound communication. It polls Soda Cloud for instructions, and when Soda Cloud needs to deliver instructions, the agent opens a bidirectional channel. No inbound rules are required.
+
+### **System Requirements**
+- **Minimum Cluster Size**: 2 CPU and 2GB RAM
+- **Capacity**: Sufficient to run up to 6 scans in parallel
+- **Current Configuration**: `t3.small` (2 vCPU, 2GB RAM) - ✅ Meets requirements
+
+**Performance Optimization**:
+- Fine-tune resources using `soda.agent.resources` and `soda.scanlauncher.resources` parameters
+- Adding more resources to scan-launcher can improve scan times by up to 30%
+- Consider adding more nodes or cluster autoscaler for larger workloads
+- **Reference**: Soda-hosted agent uses:
+  ```yaml
+  soda:
+    agent:
+      resources:
+        limits:
+          cpu: 250m
+          memory: 375Mi
+        requests:
+          cpu: 250m
+          memory: 375Mi
+  ```
+
+### **Helm Chart Repository**
+- **Official Repository URL**: `https://helm.soda.io/soda-agent/`
+- **Repository Name**: `soda-agent` (used in configuration)
+- **Chart Name**: `soda-agent`
+- **Current Status**: ✅ Repository is configured locally (`helm repo list` shows `soda-agent`)
+- **Configuration**: 
+  - Terragrunt config uses `chart_repo = "soda-agent"` (repository name)
+  - Helm provider automatically resolves the repository name to the configured URL
+  - To add/update the repository manually: `helm repo add soda-agent https://helm.soda.io/soda-agent/`
+
+### **Cloud Endpoint Configuration**
+- **US Region**: `https://cloud.us.soda.io`
+- **EU/Other Regions**: `https://cloud.soda.io`
+- **Current Configuration**: Configurable via `SODA_CLOUD_REGION` environment variable (defaults to EU)
+- **Critical**: The endpoint must match the region where your Soda Cloud account was created
+
+### **Resource Configuration (Optional)**
+To customize resource limits and requests, you can add the following to your Helm values (currently not exposed in Terraform module, but can be added):
+
+```yaml
+soda:
+  agent:
+    resources:
+      limits:
+        cpu: x
+        memory: x
+      requests:
+        cpu: x
+        memory: x
+  scanlauncher:
+    resources:
+      limits:
+        cpu: x
+        memory: x
+      requests:
+        cpu: x
+        memory: x
+```
+
+**Note**: Allocating too many resources may be costly relative to the small benefit of improved scan times. The default configuration (2 CPU, 2GB RAM) is sufficient for most use cases.
+
+### **Troubleshooting Deployment Issues (Official)**
+
+**Problem**: Agent not visible in Soda Cloud after deployment
+
+**Solution**: The `soda.cloud.endpoint` value must correspond with the region you selected when you signed up for a Soda Cloud account:
+- Use `https://cloud.us.soda.io` for the United States
+- Use `https://cloud.soda.io` for all else
+
+**Problem**: Network connectivity issues
+
+**Solution**: Define outgoing port 443 and allowlist the fully-qualified domain names:
+- `cloud.us.soda.io` (for US region) OR `cloud.soda.io` (for EU region)
+- AND `collect.soda.io` (required for all regions)
+- Plus registry URLs and S3 buckets (see "Network Requirements" above)
+
+**Problem**: `UnauthorizedOperation: You are not authorized to perform this operation`
+
+**Solution**: Your user profile is not authorized to create the cluster. Contact your AWS Administrator to request the appropriate permissions.
+
+**Current Configuration Status**:
+- ✅ Cloud endpoint: Configurable via `SODA_CLOUD_REGION` env var (defaults to EU: `https://cloud.soda.io`)
+- ✅ Network access: All required FQDNs are accessible (verified via connectivity tests)
+- ✅ Security groups: EKS nodes allow all outbound traffic (0.0.0.0/0)
+
+### **AWS PrivateLink (Optional)**
+If you use AWS services and want private connectivity with Soda Cloud:
+1. Navigate to AWS VPC dashboard
+2. Email `support@soda.io` with your AWS account ID to request the PrivateLink service name
+3. Follow AWS documentation to connect to the endpoint service
+4. Wait for endpoint status to become "Available" (may take >10 minutes)
+5. Restart the Soda Agent: `kubectl -n soda-agent rollout restart deploy`
+
+## **Upgrading Soda Agent**
+
+### **Overview**
+The Soda Agent is deployed as a Helm chart. To take advantage of new features and improvements, you can upgrade to newer versions. Upgrades use Kubernetes' default `RollingUpdate` strategy, so there is **no downtime** associated with upgrading.
+
+### **Version Information**
+
+**Latest Available Version**: `1.3.14` (released January 20, 2026)
+- **ArtifactHub**: https://artifacthub.io/packages/helm/soda-agent/soda-agent
+- **Recent Versions**:
+  - `1.3.14` (January 20, 2026)
+  - `1.3.13` (January 7, 2026)
+  - `1.3.12` (December 30, 2025)
+
+**Current Deployment**: `1.2.4` (as of last check)
+- **App Version**: `1.12.8`
+- **Status**: Can be upgraded to latest version `1.3.14`
+
+**Note**: The current configuration uses `chart_version = ""` (empty), which means it will use the latest version available at deployment time. To pin to a specific version, set `chart_version = "1.3.14"` in the Terragrunt configuration.
+
+### **Finding Current Version and Upgrade Information**
+
+1. **Check Current Deployment**:
+   ```bash
+   # List Helm releases to see current version
+   helm list -n soda-agent
+   
+   # Example output:
+   # NAME        NAMESPACE   REVISION   CHART              APP VERSION
+   # soda-agent  soda-agent  1          soda-agent-1.2.4  1.12.8
+   
+   # Get current values (including API keys)
+   helm get values -n soda-agent soda-agent
+   ```
+
+2. **Check Available Versions**:
+   ```bash
+   # Update Helm repository
+   helm repo update soda-agent
+   
+   # Search for latest version
+   helm search repo soda-agent/soda-agent --versions
+   
+   # Or search ArtifactHub
+   helm search hub soda-agent
+   
+   # Or visit: https://artifacthub.io/packages/helm/soda-agent/soda-agent
+   ```
+
+3. **Verify Kubernetes Context**:
+   ```bash
+   # Check which cluster you're accessing
+   kubectl config get-contexts
+   
+   # Switch context if needed
+   kubectl config use-context <cluster-name>
+   ```
+
+### **Upgrading via Terraform/Terragrunt (Recommended)**
+
+The recommended way to upgrade is through Terraform/Terragrunt, which ensures configuration consistency:
+
+1. **Update Chart Version**:
+   
+   **Option A: Pin to Latest Version** (Recommended for stability):
+   ```hcl
+   # In env/*/eu-west-1/addons/soda-agent/terragrunt.hcl
+   chart_version = "1.3.14"  # Pin to latest stable version
+   ```
+   
+   **Option B: Use Latest Available** (Gets newest on each apply):
+   ```hcl
+   # In env/*/eu-west-1/addons/soda-agent/terragrunt.hcl
+   chart_version = ""  # Empty = use latest available at deployment time
+   ```
+   
+   **Current Configuration**: Uses `chart_version = ""` (Option B)
+   
+   **Recommendation**: Consider pinning to `1.3.14` for production environments to ensure consistent deployments.
+
+2. **Apply Changes**:
+   ```bash
+   cd env/dev/eu-west-1/addons/soda-agent
+   terragrunt plan   # Review changes (should show chart version update)
+   terragrunt apply  # Apply upgrade
+   ```
+
+   **Example: Upgrading from 1.2.4 to 1.3.14**:
+   ```bash
+   # 1. Update chart_version in terragrunt.hcl
+   # chart_version = "1.3.14"
+   
+   # 2. Review the plan
+   cd env/dev/eu-west-1/addons/soda-agent
+   terragrunt plan
+   
+   # 3. Apply the upgrade (no downtime - RollingUpdate)
+   terragrunt apply
+   
+   # 4. Verify the upgrade
+   helm list -n soda-agent
+   kubectl get pods -n soda-agent
+   ```
+
+3. **Verify Upgrade**:
+   ```bash
+   # Check pod status
+   kubectl get pods -n soda-agent
+   
+   # Check logs
+   kubectl logs -n soda-agent -l app.kubernetes.io/name=soda-agent --tail=50
+   
+   # Verify in Soda Cloud UI
+   # Navigate to: Your Avatar > Agents
+   ```
+
+### **Upgrading via Helm CLI (Alternative)**
+
+If you need to upgrade directly via Helm (not recommended for infrastructure managed by Terraform):
+
+```bash
+helm upgrade soda-agent soda-agent/soda-agent \
+  --set soda.agent.name=datashift-dev-eu-west-1-agent \
+  --set soda.cloud.endpoint=https://cloud.soda.io \
+  --set soda.apikey.id=*** \
+  --set soda.apikey.secret=**** \
+  --set soda.agent.logFormat=raw \
+  --set soda.agent.loglevel=INFO \
+  --namespace soda-agent
+```
+
+**Note**: If using Terraform, prefer `terragrunt apply` to maintain state consistency.
+
+### **Version-Specific Upgrade Notes**
+
+#### **Upgrading to 1.3.x from 1.2.x**
+
+**Current Status**: Deployed version is `1.2.4`, latest is `1.3.14`
+
+**Key Changes in 1.3.x**:
+- Continued improvements to instruction handling
+- Enhanced error handling and logging
+- Performance optimizations
+- Bug fixes (including potential fixes for instruction fetching issues)
+
+**Upgrade Path**: 
+- Direct upgrade from `1.2.4` to `1.3.14` is supported
+- No breaking changes between 1.2.x and 1.3.x
+- Rolling update ensures zero downtime
+
+**Recommended Steps**:
+1. Pin version to `1.3.14` in Terragrunt config
+2. Run `terragrunt plan` to review changes
+3. Apply upgrade with `terragrunt apply`
+4. Monitor logs for any issues
+5. Verify agent functionality in Soda Cloud
+
+### **Upgrading from 1.1.x to 1.2.x+ (Breaking Changes)**
+
+Starting from version 1.2.0, all images are distributed using Soda's private container registry. Important changes:
+
+#### **1. Image Registry Authentication**
+
+**Option A: Use Existing API Keys (Default)**
+- ✅ **Current Configuration**: Already compatible
+- The Terraform module uses `SODA_API_KEY_ID` and `SODA_API_KEY_SECRET` for both Soda Cloud and image registry authentication
+- No changes needed if using the same API keys
+
+**Option B: Use Separate Image Registry Credentials**
+- ✅ **Current Configuration**: Already supported
+- The Terraform module supports separate credentials via:
+  - `SODA_IMAGE_APIKEY_ID` environment variable
+  - `SODA_IMAGE_APIKEY_SECRET` environment variable
+- If these are set, they're used for image registry authentication instead of the main API keys
+
+#### **2. Image Pull Secrets Configuration**
+
+- ✅ **Current Configuration**: Already compatible
+- The module uses `existingImagePullSecrets` (correct for 1.2.x+)
+- Configuration in: `module/application/helm/soda-agent/main.tf` (line 158)
+- If you have an existing secret, set `existing_image_pull_secret` in Terragrunt config
+
+#### **3. Cloud Region Property (New in 1.2.x)**
+
+**Current Status**: ⚠️ **Not yet implemented** - using `cloud_endpoint` instead
+
+The new `soda.cloud.region` property (values: `"eu"` or `"us"`) automatically sets the correct endpoint and registry. Currently, the module uses:
+- `soda.cloud.endpoint` (explicit endpoint URL)
+- `SODA_CLOUD_REGION` environment variable (for determining endpoint)
+
+**Future Enhancement**: The module could be updated to use `soda.cloud.region` instead of `soda.cloud.endpoint` for better compatibility with 1.2.x+ charts.
+
+**Current Workaround**: The existing `cloud_endpoint` configuration works correctly with 1.2.x+ charts.
+
+#### **4. Scan Launcher Naming**
+
+- ⚠️ **Note**: If you have custom `scanlauncher` configuration, it should be renamed to `scanLauncher` (camelCase)
+- **Current Configuration**: No custom scan launcher configuration, so no changes needed
+
+### **Upgrade Checklist**
+
+Before upgrading:
+- [ ] Verify current version: `helm list -n soda-agent`
+- [ ] Check available versions: `helm search repo soda-agent/soda-agent --versions` or visit [ArtifactHub](https://artifacthub.io/packages/helm/soda-agent/soda-agent)
+- [ ] Review release notes for breaking changes (especially when upgrading major/minor versions)
+- [ ] Backup current values: `helm get values -n soda-agent soda-agent > values-backup.yaml`
+- [ ] Verify API keys are set: `echo $SODA_API_KEY_ID`
+- [ ] Verify image credentials (if using separate): `echo $SODA_IMAGE_APIKEY_ID`
+- [ ] Check Kubernetes context: `kubectl config get-contexts`
+- [ ] For production: Consider testing upgrade in dev environment first
+
+After upgrading:
+- [ ] Verify pod status: `kubectl get pods -n soda-agent` (should show Running)
+- [ ] Check logs for errors: `kubectl logs -n soda-agent -l app.kubernetes.io/name=soda-agent --tail=50`
+- [ ] Verify new chart version: `helm list -n soda-agent` (should show updated version)
+- [ ] Verify agent appears in Soda Cloud UI (agent should be online)
+- [ ] Test a scan to ensure functionality
+- [ ] Monitor for any new errors or warnings in logs
+
+### **Rollback Procedure**
+
+If an upgrade causes issues:
+
+**Via Terraform**:
+```bash
+cd env/dev/eu-west-1/addons/soda-agent
+# Revert chart_version in terragrunt.hcl to previous version
+terragrunt apply
+```
+
+**Via Helm**:
+```bash
+# List revisions
+helm history soda-agent -n soda-agent
+
+# Rollback to previous revision
+helm rollback soda-agent -n soda-agent
+
+# Or rollback to specific revision
+helm rollback soda-agent <revision-number> -n soda-agent
+```
 
 ## **Notes**
 

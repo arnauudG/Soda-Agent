@@ -1,9 +1,9 @@
 terraform {
   required_version = ">= 1.5.0"
   required_providers {
-    aws        = { source = "hashicorp/aws",        version = ">= 5.0, < 6.0" }
+    aws        = { source = "hashicorp/aws", version = ">= 5.0" }
     kubernetes = { source = "hashicorp/kubernetes", version = ">= 2.23, < 3.0" }
-    helm       = { source = "hashicorp/helm",       version = ">= 2.12, < 3.0" }
+    helm       = { source = "hashicorp/helm", version = ">= 2.12, < 3.0" }
   }
 }
 
@@ -64,7 +64,7 @@ resource "kubernetes_secret" "image_pull" {
   count = local.using_existing_pullsec ? 0 : 1
 
   metadata {
-    name      = "${var.agent_name}-pullsecret"   # keep stable (no timestamps)
+    name      = "${var.agent_name}-pullsecret" # keep stable (no timestamps)
     namespace = var.namespace
   }
 
@@ -98,16 +98,16 @@ locals {
 
 # ---------- Helm release ----------
 resource "helm_release" "soda_agent" {
-  name              = "soda-agent"
-  namespace         = var.namespace
-  create_namespace  = false  # We create the namespace explicitly with kubernetes_namespace resource
-  repository        = var.chart_repo
-  chart             = var.chart_name
-  version           = var.chart_version
-  atomic            = true
-  wait_for_jobs     = true
-  timeout           = 900
-  lint              = false
+  name             = "soda-agent"
+  namespace        = var.namespace
+  create_namespace = false # We create the namespace explicitly with kubernetes_namespace resource
+  repository       = var.chart_repo
+  chart            = var.chart_name
+  version          = var.chart_version
+  atomic           = true
+  wait_for_jobs    = true
+  timeout          = 900
+  lint             = false
 
   # App settings
   set {

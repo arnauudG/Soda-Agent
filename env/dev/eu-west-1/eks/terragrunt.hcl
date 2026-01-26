@@ -28,10 +28,13 @@ locals {
   node_group_config = {
     desired_size = 1
     # WARNING: min_size=0 requires Cluster Autoscaler to be installed and configured
-    # If you don't have cluster autoscaler, set min_size=1 to ensure system pods can run
-    min_size     = 0  # Allow scaling to 0 when idle (requires cluster autoscaler)
+    # Set min_size=1 to ensure at least one node is always available for system pods and workloads
+    # This prevents "Too many pods" errors when the cluster scales to 0 or nodes are at capacity
+    min_size     = 1  # Keep at least 1 node available (prevents scheduling issues)
     max_size     = 2
-    instance_types = ["t3.micro"]  # Smallest instance for dev to minimize costs
+    # t3.small provides 2 vCPU and 2 GB RAM (double the resources of t3.micro)
+    # This gives more headroom for system pods (CoreDNS, VPC CNI) + workloads
+    instance_types = ["t3.small"]  # Upgraded from t3.micro for better pod capacity
     capacity_type  = "SPOT"
   }
 
@@ -103,7 +106,7 @@ generate "backend" {
 }
 
 terraform {
-  source = "tfr://registry.terraform.io/terraform-aws-modules/eks/aws?version=20.24.0"
+  source = "${local.modules_root}/compute/eks/cluster"
 }
 
 # Provider pin & region
@@ -125,12 +128,11 @@ inputs = {
 
   vpc_id     = dependency.vpc.outputs.vpc_id
   subnet_ids = dependency.vpc.outputs.private_subnets
+  ops_security_group_id = dependency.sg_ops.outputs.security_group_id
 
   enable_irsa = true
 
   authentication_mode                      = "API_AND_CONFIG_MAP"
-  create_aws_auth_configmap                = true
-  manage_aws_auth_configmap                = true
   enable_cluster_creator_admin_permissions = true
 
   # Pod Identity (newer alternative to IRSA for some use cases)
@@ -155,10 +157,11 @@ inputs = {
   ]
   cloudwatch_log_group_retention_in_days = local.cloudwatch_log_retention
 
-  # Encryption at rest - encrypt all resources for better security
+  # Encryption at rest - encrypt secrets for better security
+  # Note: AWS EKS only supports encrypting "secrets", not "configmaps"
   cluster_encryption_config = {
     provider_key_arn = null  # Use AWS managed keys
-    resources        = ["secrets", "configmaps"]  # Encrypt secrets and configmaps
+    resources        = ["secrets"]  # Only secrets can be encrypted in EKS
   }
 
   # Environment-specific node group configuration
@@ -227,20 +230,8 @@ inputs = {
   cluster_addons = {
     coredns = {
       most_recent = true
-      configuration_values = jsonencode({
-        compute = {
-          resources = {
-            requests = {
-              cpu    = "100m"
-              memory = "128Mi"
-            }
-            limits = {
-              cpu    = "200m"
-              memory = "256Mi"
-            }
-          }
-        }
-      })
+      # Note: Resource requests/limits for CoreDNS should be managed via Kubernetes manifests
+      # The EKS addon configuration_values doesn't support compute.resources format
     }
     kube-proxy = {
       most_recent = true
@@ -256,10 +247,12 @@ inputs = {
       })
     }
     # EBS CSI driver for persistent volumes
-    aws-ebs-csi-driver = {
-      most_recent = true
-      service_account_role_arn = null  # Will use IRSA automatically
-    }
+    # Note: Temporarily disabled due to long installation times
+    # Can be enabled later when persistent volumes are needed
+    # aws-ebs-csi-driver = {
+    #   most_recent = true
+    #   service_account_role_arn = null  # Will use IRSA automatically
+    # }
   }
 
   # Cluster maintenance window (optional - uncomment if you want scheduled maintenance)

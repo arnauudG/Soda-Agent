@@ -100,7 +100,7 @@ dependencies {
 }
 
 terraform {
-  source = "tfr://registry.terraform.io/terraform-aws-modules/ec2-instance/aws?version=5.7.0"
+  source = "${local.parent.locals.modules_root}/compute/ec2/ops"
 }
 
 inputs = {
@@ -112,11 +112,13 @@ inputs = {
   subnet_id                   = dependency.vpc.outputs.public_subnets[0]
   associate_public_ip_address = true
 
-  create_iam_instance_profile          = true
-  iam_role_use_name_prefix             = false
-  iam_instance_profile_use_name_prefix = false
-  iam_role_name                        = "${local.org}-${local.env}-ops-role"
-  iam_instance_profile_name            = "${local.org}-${local.env}-ops-instance-profile"
+  # Instance placement configuration
+  placement_group = null  # No placement group needed for single instance
+  tenancy         = "default"  # Shared tenancy for cost optimization
+
+  create_iam_instance_profile = true
+  iam_role_use_name_prefix    = false
+  iam_role_name               = "${local.org}-${local.env}-ops-role"
 
   # IAM policies for ops instance
   iam_role_policies = {
@@ -124,21 +126,34 @@ inputs = {
     eks = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
     # ECR read access for pulling container images
     ecr = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+    # CloudWatch Logs for better observability
+    cloudwatch_logs = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
   }
 
   create_security_group  = false
   vpc_security_group_ids = [dependency.sg_ops.outputs.security_group_id]
 
-  enable_monitoring = true
+  monitoring = true
+
+  # Additional instance configuration
+  ebs_optimized = false  # Not needed for t3.micro (not supported anyway)
+  
+  # Hibernation (optional - enables stop/start with state preservation)
+  # hibernation = false  # Disabled by default, enable if you need state preservation on stop
 
   root_block_device = [{
     volume_size           = local.instance_config.volume_size
     volume_type           = "gp3"
     encrypted             = true
     delete_on_termination = true
-    iops                  = 3000  # GP3 baseline IOPS
-    throughput            = 125   # GP3 baseline throughput (MB/s)
+    # Dev: Reduced IOPS/throughput for cost savings (GP3 minimums)
+    iops                  = 3000  # GP3 baseline IOPS (minimum)
+    throughput            = 125   # GP3 baseline throughput (minimum, MB/s)
   }]
+
+  # Note: Credit specification is not directly supported by the module
+  # For t3 instances, CPU credits are managed automatically by AWS
+  # To set unlimited credits, use AWS Console or CLI after instance creation
 
   metadata_options = {
     http_endpoint               = "enabled"

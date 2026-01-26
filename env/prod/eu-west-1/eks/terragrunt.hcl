@@ -101,7 +101,7 @@ generate "backend" {
 }
 
 terraform {
-  source = "tfr://registry.terraform.io/terraform-aws-modules/eks/aws?version=20.24.0"
+  source = "${local.modules_root}/compute/eks/cluster"
 }
 
 # Provider pin & region
@@ -123,12 +123,11 @@ inputs = {
 
   vpc_id     = dependency.vpc.outputs.vpc_id
   subnet_ids = dependency.vpc.outputs.private_subnets
+  ops_security_group_id = dependency.sg_ops.outputs.security_group_id
 
   enable_irsa = true
 
   authentication_mode                      = "API_AND_CONFIG_MAP"
-  create_aws_auth_configmap                = true
-  manage_aws_auth_configmap                = true
   enable_cluster_creator_admin_permissions = true
 
   # Pod Identity (newer alternative to IRSA for some use cases)
@@ -155,10 +154,11 @@ inputs = {
   ]
   cloudwatch_log_group_retention_in_days = local.cloudwatch_log_retention
 
-  # Encryption at rest - encrypt all resources for better security
+  # Encryption at rest - encrypt secrets for better security
+  # Note: AWS EKS only supports encrypting "secrets", not "configmaps"
   cluster_encryption_config = {
     provider_key_arn = null  # Use AWS managed keys
-    resources        = ["secrets", "configmaps"]  # Encrypt secrets and configmaps
+    resources        = ["secrets"]  # Only secrets can be encrypted in EKS
   }
 
   # Environment-specific node group configuration (prod: larger, more reliable)
@@ -227,20 +227,8 @@ inputs = {
   cluster_addons = {
     coredns = {
       most_recent = true
-      configuration_values = jsonencode({
-        compute = {
-          resources = {
-            requests = {
-              cpu    = "200m"
-              memory = "256Mi"
-            }
-            limits = {
-              cpu    = "500m"
-              memory = "512Mi"
-            }
-          }
-        }
-      })
+      # Note: Resource requests/limits for CoreDNS should be managed via Kubernetes manifests
+      # The EKS addon configuration_values doesn't support compute.resources format
     }
     kube-proxy = {
       most_recent = true
@@ -256,10 +244,12 @@ inputs = {
       })
     }
     # EBS CSI driver for persistent volumes
-    aws-ebs-csi-driver = {
-      most_recent = true
-      service_account_role_arn = null  # Will use IRSA automatically
-    }
+    # Note: Temporarily disabled due to long installation times
+    # Can be enabled later when persistent volumes are needed
+    # aws-ebs-csi-driver = {
+    #   most_recent = true
+    #   service_account_role_arn = null  # Will use IRSA automatically
+    # }
   }
 
   # Cluster maintenance window (optional - uncomment if you want scheduled maintenance)

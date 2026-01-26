@@ -64,7 +64,7 @@ dependency "vpc" {
 }
 
 terraform {
-  source = "tfr://registry.terraform.io/terraform-aws-modules/security-group/aws?version=5.1.0"
+  source = "${local.parent.locals.modules_root}/security/security-group/ops"
 }
 
 inputs = {
