@@ -20,6 +20,8 @@ locals {
     Region = local.aws_region
   })
   
+  modules_root = local.parent.locals.modules_root
+  
   # State bucket and lock table names
   state_bucket = "${get_aws_account_id()}-${local.org}-${local.env}-tfstate-${local.aws_region}"
   lock_table   = "${get_aws_account_id()}-${local.org}-${local.env}-tf-locks"
@@ -71,10 +73,11 @@ dependency "vpc" {
 dependencies { paths = ["../vpc"] }
 
 terraform {
-  source = "${local.parent.locals.modules_root}/network/vpc-endpoints"
+  source = "${local.modules_root}/network/vpc-endpoints"
 }
 
 inputs = {
+  # Get VPC ID from dependency output (not hardcoded)
   vpc_id = dependency.vpc.outputs.vpc_id
 
   # Shared SG for Interface endpoints
@@ -88,6 +91,7 @@ inputs = {
       to_port     = 443
       protocol    = "tcp"
       description = "Allow HTTPS from inside VPC"
+      # Get VPC CIDR block from dependency output (not hardcoded)
       cidr_blocks = [dependency.vpc.outputs.vpc_cidr_block]
     },
     {
@@ -113,7 +117,8 @@ inputs = {
       service             = "ssm"
       service_type        = "Interface"
       private_dns_enabled = true
-      subnet_ids          = dependency.vpc.outputs.private_subnets
+      # Get subnet IDs from dependency output (not hardcoded)
+      subnet_ids = dependency.vpc.outputs.private_subnets
       tags                = merge(local.common_tags, {
         Component = "network"
         Name      = "${local.org}-${local.env}-vpce-ssm"
@@ -123,7 +128,8 @@ inputs = {
       service             = "ssmmessages"
       service_type        = "Interface"
       private_dns_enabled = true
-      subnet_ids          = dependency.vpc.outputs.private_subnets
+      # Get subnet IDs from dependency output (not hardcoded)
+      subnet_ids = dependency.vpc.outputs.private_subnets
       tags                = merge(local.common_tags, {
         Component = "network"
         Name      = "${local.org}-${local.env}-vpce-ssmmessages"
@@ -133,7 +139,8 @@ inputs = {
       service             = "ec2messages"
       service_type        = "Interface"
       private_dns_enabled = true
-      subnet_ids          = dependency.vpc.outputs.private_subnets
+      # Get subnet IDs from dependency output (not hardcoded)
+      subnet_ids = dependency.vpc.outputs.private_subnets
       tags                = merge(local.common_tags, {
         Component = "network"
         Name      = "${local.org}-${local.env}-vpce-ec2messages"
@@ -145,7 +152,8 @@ inputs = {
       service             = "ecr.api"
       service_type        = "Interface"
       private_dns_enabled = true
-      subnet_ids          = dependency.vpc.outputs.private_subnets
+      # Get subnet IDs from dependency output (not hardcoded)
+      subnet_ids = dependency.vpc.outputs.private_subnets
       tags                = merge(local.common_tags, {
         Component = "network"
         Name      = "${local.org}-${local.env}-vpce-ecr-api"
@@ -155,7 +163,8 @@ inputs = {
       service             = "ecr.dkr"
       service_type        = "Interface"
       private_dns_enabled = true
-      subnet_ids          = dependency.vpc.outputs.private_subnets
+      # Get subnet IDs from dependency output (not hardcoded)
+      subnet_ids = dependency.vpc.outputs.private_subnets
       tags                = merge(local.common_tags, {
         Component = "network"
         Name      = "${local.org}-${local.env}-vpce-ecr-dkr"
@@ -165,7 +174,8 @@ inputs = {
       service             = "sts"
       service_type        = "Interface"
       private_dns_enabled = true
-      subnet_ids          = dependency.vpc.outputs.private_subnets
+      # Get subnet IDs from dependency output (not hardcoded)
+      subnet_ids = dependency.vpc.outputs.private_subnets
       tags                = merge(local.common_tags, {
         Component = "network"
         Name      = "${local.org}-${local.env}-vpce-sts"
@@ -175,7 +185,8 @@ inputs = {
       service             = "logs"
       service_type        = "Interface"
       private_dns_enabled = true
-      subnet_ids          = dependency.vpc.outputs.private_subnets
+      # Get subnet IDs from dependency output (not hardcoded)
+      subnet_ids = dependency.vpc.outputs.private_subnets
       tags                = merge(local.common_tags, {
         Component = "network"
         Name      = "${local.org}-${local.env}-vpce-logs"
@@ -186,7 +197,8 @@ inputs = {
     s3 = {
       service             = "s3"
       service_type        = "Gateway"
-      route_table_ids     = dependency.vpc.outputs.private_route_table_ids
+      # Get route table IDs from dependency output (not hardcoded)
+      route_table_ids = dependency.vpc.outputs.private_route_table_ids
       tags                = merge(local.common_tags, {
         Component = "network"
         Name      = "${local.org}-${local.env}-vpce-s3"

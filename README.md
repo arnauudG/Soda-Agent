@@ -610,11 +610,30 @@ terragrunt hcl validate --inputs
 ```
 
 ### **Environment Variables Setup**
+
+**Required Variables**:
 ```bash
 export SODA_API_KEY_ID="your-api-key"
 export SODA_API_KEY_SECRET="your-api-secret"
+```
+
+**Optional Variables** (for separate image registry credentials):
+```bash
+# Only set these if you want to use different credentials for image registry
 export SODA_IMAGE_APIKEY_ID="your-image-key"
 export SODA_IMAGE_APIKEY_SECRET="your-image-secret"
+```
+
+**Image Registry Credentials Behavior** (1.2.0+):
+- **Default**: If `SODA_IMAGE_APIKEY_ID` is not set, the agent automatically uses `SODA_API_KEY_ID` and `SODA_API_KEY_SECRET` for both Soda Cloud and image registry authentication
+- **Separate Credentials**: If `SODA_IMAGE_APIKEY_ID` is set, those credentials are used exclusively for image registry
+- **Configuration**: This fallback logic is implemented in `env/*/eu-west-1/addons/soda-agent/terragrunt.hcl` using locals
+
+**Other Optional Variables**:
+```bash
+export SODA_CLOUD_REGION="eu"  # or "us" (defaults to "eu")
+export SODA_LOG_FORMAT="raw"   # or "json" (defaults to "raw")
+export SODA_LOG_LEVEL="INFO"   # ERROR, WARN, INFO, DEBUG, or TRACE (defaults to "INFO")
 ```
 
 ## **Getting Help**
@@ -647,10 +666,33 @@ export SODA_IMAGE_APIKEY_SECRET="your-image-secret"
 - **Environment-Specific Configs**: Different instance sizes, node counts for dev vs prod
 - **Cost Optimization**: Prod uses multiple NAT gateways for HA, dev uses single NAT
 
-### **Soda Agent Module Updates**
+### **Soda Agent Module Updates (January 2025)**
 - **Namespace Creation**: Added explicit `kubernetes_namespace` resource to ensure namespace exists before creating secrets
 - **Dependency Management**: Improved resource dependencies to prevent race conditions
 - **Helm Configuration**: Disabled `create_namespace` in Helm release since we create it explicitly
+- **Image Registry Credentials (1.2.0+)**:
+  - **Fallback Configuration**: Image registry credentials automatically fall back to main API keys if `SODA_IMAGE_APIKEY_ID` is not set
+  - **Configuration**: Uses locals in Terragrunt to compute credentials with fallback logic
+  - **Implementation**: 
+    ```hcl
+    locals {
+      api_key_id     = get_env("SODA_API_KEY_ID", "")
+      api_key_secret = get_env("SODA_API_KEY_SECRET", "")
+      image_credentials_id     = get_env("SODA_IMAGE_APIKEY_ID", local.api_key_id)
+      image_credentials_secret = get_env("SODA_IMAGE_APIKEY_SECRET", local.api_key_secret)
+    }
+    ```
+  - **Benefits**: Simplifies configuration - same API keys can be used for both Soda Cloud and image registry (default behavior per Soda documentation)
+  - **Applied to**: Both dev and prod environments
+- **Chart Version Pinning**:
+  - **Current Version**: `1.3.13` (pinned for both dev and prod)
+  - **Upgrade Path**: Successfully upgraded from `1.2.4` to `1.3.13` via fresh install
+  - **Status**: ✅ Agent operational with new version, processing instructions successfully
+  - **Bug Fixes**: Resolved NullPointerException instruction fetching bug present in `1.2.4`
+- **Configuration Consistency**:
+  - **Dev and Prod Alignment**: Both environments now use identical configuration structure
+  - **Image Credentials**: Same fallback logic implemented in both environments
+  - **Version Management**: Consistent chart version pinning across environments
 
 ### **Terragrunt Configuration Fixes**
 - **Mock Outputs**: Added proper mock outputs for all dependency blocks to enable validation
@@ -754,18 +796,23 @@ export SODA_IMAGE_APIKEY_SECRET="your-image-secret"
     - Upgrading to `t3.medium` (2 vCPU, 4GB RAM) for more memory
     - Installing Cluster Autoscaler for automatic scaling
 
-### **Soda Agent Instruction Fetching Bug (January 2025)**
-- **Issue**: Agent version `v2.1.19` (image: `registry.cloud.soda.io/sodadata/agent-orchestrator:v2.1.19`) experiences `NullPointerException` when fetching instructions from Soda Cloud
-- **Symptoms**:
-  - Agent pod is running and healthy (1/1 Ready, 0 restarts)
+### **Soda Agent Instruction Fetching Bug (January 2025) - ✅ RESOLVED**
+
+- **Issue**: Agent version `v2.1.19` (image: `registry.cloud.soda.io/sodadata/agent-orchestrator:v2.1.19`) experienced `NullPointerException` when fetching instructions from Soda Cloud
+- **Status**: ✅ **RESOLVED** - Fixed by upgrading to chart version `1.3.13` (agent image `v2.2.2`)
+- **Resolution Date**: January 24, 2026
+- **Resolution Method**: Fresh install with upgraded chart version
+- **Previous Symptoms** (now resolved):
+  - Agent pod was running and healthy (1/1 Ready, 0 restarts)
   - Agent successfully registered and connected to Soda Cloud
   - Repeated errors in logs: `NullPointerException: Cannot invoke "io.soda.agent.orchestrator.cloud.api.CoreAgentInstructionDTO.getId()" because "dto" is null`
-  - Agent cannot receive new instructions (including data source connection instructions)
-- **Root Cause**: Soda Cloud API returns null entries in the instructions array, and the agent code doesn't filter nulls before processing
-- **Impact**: 
-  - Agent cannot fetch new instructions from Soda Cloud
-  - Data source connections (e.g., Snowflake) cannot be processed
-  - Existing instructions may still be processed if they were fetched before the bug occurred
+  - Agent could not receive new instructions (including data source connection instructions)
+- **Previous Root Cause**: Soda Cloud API returned null entries in the instructions array, and the agent code didn't filter nulls before processing
+- **Current Status**: 
+  - ✅ Agent successfully fetching and processing instructions
+  - ✅ Multiple instructions completed successfully
+  - ✅ No NullPointerException errors in logs
+  - ✅ Ready for data source connections (Snowflake, etc.)
 - **Troubleshooting Steps**:
   1. **Check Agent Status**:
      ```bash
@@ -820,8 +867,8 @@ export SODA_IMAGE_APIKEY_SECRET="your-image-secret"
      - Confirm agent appears as online/connected
      - Verify data source configuration is correct
      - Check if instructions are queued (they won't process until bug is fixed)
-- **Workaround**: The agent continues to run and process previously fetched instructions, but cannot fetch new ones until the bug is fixed by Soda
-- **Note**: This is an application bug in the Soda Agent code, not an infrastructure issue. The deployment configuration is correct.
+- **Resolution**: Upgraded to chart version `1.3.13` which includes fixes for instruction handling
+- **Note**: The bug was in the Soda Agent application code (v2.1.19). The fix was included in later versions (v2.2.2+).
 
 ## **Soda Agent Deployment Requirements (Official Documentation)**
 
@@ -944,14 +991,6 @@ soda:
 - ✅ Network access: All required FQDNs are accessible (verified via connectivity tests)
 - ✅ Security groups: EKS nodes allow all outbound traffic (0.0.0.0/0)
 
-### **AWS PrivateLink (Optional)**
-If you use AWS services and want private connectivity with Soda Cloud:
-1. Navigate to AWS VPC dashboard
-2. Email `support@soda.io` with your AWS account ID to request the PrivateLink service name
-3. Follow AWS documentation to connect to the endpoint service
-4. Wait for endpoint status to become "Available" (may take >10 minutes)
-5. Restart the Soda Agent: `kubectl -n soda-agent rollout restart deploy`
-
 ## **Upgrading Soda Agent**
 
 ### **Overview**
@@ -966,11 +1005,12 @@ The Soda Agent is deployed as a Helm chart. To take advantage of new features an
   - `1.3.13` (January 7, 2026)
   - `1.3.12` (December 30, 2025)
 
-**Current Deployment**: `1.2.4` (as of last check)
-- **App Version**: `1.12.8`
-- **Status**: Can be upgraded to latest version `1.3.14`
+**Current Deployment**: `1.3.13` (deployed January 24, 2026)
+- **App Version**: `1.13.1`
+- **Status**: Successfully upgraded from `1.2.4` to `1.3.13`
+- **Agent Status**: ✅ Operational and processing instructions successfully
 
-**Note**: The current configuration uses `chart_version = ""` (empty), which means it will use the latest version available at deployment time. To pin to a specific version, set `chart_version = "1.3.14"` in the Terragrunt configuration.
+**Note**: The current configuration uses `chart_version = "1.3.13"` (pinned version) for both dev and prod environments. This ensures consistent deployments across environments.
 
 ### **Finding Current Version and Upgrade Information**
 
@@ -1028,9 +1068,9 @@ The recommended way to upgrade is through Terraform/Terragrunt, which ensures co
    chart_version = ""  # Empty = use latest available at deployment time
    ```
    
-   **Current Configuration**: Uses `chart_version = ""` (Option B)
+   **Current Configuration**: Uses `chart_version = "1.3.13"` (Option A - pinned version)
    
-   **Recommendation**: Consider pinning to `1.3.14` for production environments to ensure consistent deployments.
+   **Recommendation**: Pinned versions are recommended for production environments to ensure consistent deployments. Both dev and prod are currently pinned to `1.3.13`.
 
 2. **Apply Changes**:
    ```bash
@@ -1089,25 +1129,31 @@ helm upgrade soda-agent soda-agent/soda-agent \
 
 #### **Upgrading to 1.3.x from 1.2.x**
 
-**Current Status**: Deployed version is `1.2.4`, latest is `1.3.14`
+**Current Status**: ✅ Successfully upgraded from `1.2.4` to `1.3.13` (January 24, 2026)
 
 **Key Changes in 1.3.x**:
 - Continued improvements to instruction handling
 - Enhanced error handling and logging
 - Performance optimizations
-- Bug fixes (including potential fixes for instruction fetching issues)
+- Bug fixes (including fixes for instruction fetching issues)
+- Improved agent registration and state management
 
-**Upgrade Path**: 
-- Direct upgrade from `1.2.4` to `1.3.14` is supported
-- No breaking changes between 1.2.x and 1.3.x
-- Rolling update ensures zero downtime
+**Upgrade Experience**:
+- **Initial Attempt**: Direct upgrade from `1.2.4` to `1.3.13` encountered agent ID mismatch issues
+- **Resolution**: Performed fresh install (deleted namespace and redeployed) which resolved the issue
+- **Result**: Agent successfully registered with new ID and is processing instructions correctly
+- **Status**: ✅ Operational with version `1.3.13`
 
-**Recommended Steps**:
-1. Pin version to `1.3.14` in Terragrunt config
-2. Run `terragrunt plan` to review changes
-3. Apply upgrade with `terragrunt apply`
-4. Monitor logs for any issues
-5. Verify agent functionality in Soda Cloud
+**Lessons Learned**:
+- If upgrading encounters agent ID issues, a fresh install may be necessary
+- Fresh install process: `helm uninstall`, `kubectl delete namespace`, then redeploy
+- New agent will register with a fresh ID in Soda Cloud
+- All previous agent state is cleared, allowing clean registration
+
+**Current Configuration**:
+- Chart version: `1.3.13` (pinned in both dev and prod)
+- App version: `1.13.1`
+- Agent status: ✅ Running and processing instructions successfully
 
 ### **Upgrading from 1.1.x to 1.2.x+ (Breaking Changes)**
 
@@ -1115,17 +1161,26 @@ Starting from version 1.2.0, all images are distributed using Soda's private con
 
 #### **1. Image Registry Authentication**
 
-**Option A: Use Existing API Keys (Default)**
-- ✅ **Current Configuration**: Already compatible
-- The Terraform module uses `SODA_API_KEY_ID` and `SODA_API_KEY_SECRET` for both Soda Cloud and image registry authentication
-- No changes needed if using the same API keys
+**Option A: Use Existing API Keys (Default) - ✅ Current Configuration**
+- **Implementation**: Automatically uses main API keys for image registry if separate credentials are not provided
+- **Configuration**: Uses locals with fallback logic in `env/*/eu-west-1/addons/soda-agent/terragrunt.hcl`:
+  ```hcl
+  locals {
+    api_key_id     = get_env("SODA_API_KEY_ID", "")
+    api_key_secret = get_env("SODA_API_KEY_SECRET", "")
+    
+    # Fallback to main API keys if image credentials not provided
+    image_credentials_id     = get_env("SODA_IMAGE_APIKEY_ID", local.api_key_id)
+    image_credentials_secret = get_env("SODA_IMAGE_APIKEY_SECRET", local.api_key_secret)
+  }
+  ```
+- **Benefits**: Simplifies configuration - no need to set separate image credentials unless required
+- **Status**: ✅ Working correctly in both dev and prod environments
 
 **Option B: Use Separate Image Registry Credentials**
-- ✅ **Current Configuration**: Already supported
-- The Terraform module supports separate credentials via:
-  - `SODA_IMAGE_APIKEY_ID` environment variable
-  - `SODA_IMAGE_APIKEY_SECRET` environment variable
-- If these are set, they're used for image registry authentication instead of the main API keys
+- **Configuration**: Set `SODA_IMAGE_APIKEY_ID` and `SODA_IMAGE_APIKEY_SECRET` environment variables
+- **Behavior**: If set, these override the fallback and are used exclusively for image registry authentication
+- **Use Case**: When you want to use different credentials for image registry vs Soda Cloud API
 
 #### **2. Image Pull Secrets Configuration**
 
@@ -1194,6 +1249,43 @@ helm rollback soda-agent -n soda-agent
 helm rollback soda-agent <revision-number> -n soda-agent
 ```
 
+### **Fresh Install Process (January 2025)**
+
+If you encounter agent ID issues or need to start completely fresh:
+
+1. **Uninstall Helm Release**:
+   ```bash
+   helm uninstall soda-agent -n soda-agent
+   ```
+
+2. **Delete Namespace** (removes all secrets and state):
+   ```bash
+   kubectl delete namespace soda-agent
+   ```
+
+3. **Verify Cleanup**:
+   ```bash
+   kubectl get namespace soda-agent  # Should show "NotFound"
+   ```
+
+4. **Update Configuration**:
+   - Ensure `create_namespace = true` in Terragrunt config
+   - Verify API keys are set in environment variables
+   - Check chart version is set correctly
+
+5. **Redeploy**:
+   ```bash
+   cd env/dev/eu-west-1/addons/soda-agent
+   terragrunt apply
+   ```
+
+6. **Verify New Agent**:
+   - Agent will register with a new ID in Soda Cloud
+   - Check logs: `kubectl logs -n soda-agent -l app.kubernetes.io/name=soda-agent`
+   - Verify in Soda Cloud UI: Your Avatar > Agents
+
+**Note**: Fresh install clears all previous agent state, including stored agent ID. The agent will register as a new agent in Soda Cloud.
+
 ## **Notes**
 
 - **Bootstrap**: Set to `skip = true` by default. Run `./bootstrap.sh <env>` for new environments.
@@ -1208,7 +1300,19 @@ helm rollback soda-agent <revision-number> -n soda-agent
 
 ---
 
-**Last Updated**: January 2025  
+### **Recent Updates (January 24, 2025)**
+
+- **Soda Agent Upgrade**: Successfully upgraded from `1.2.4` to `1.3.13`
+- **Image Credentials Configuration**: Implemented automatic fallback to main API keys for image registry authentication
+- **Fresh Install Process**: Documented procedure for clean agent reinstallation
+- **Bug Resolution**: Resolved NullPointerException instruction fetching bug via upgrade
+- **Production Configuration**: Updated prod environment to match dev configuration
+- **Documentation**: Enhanced upgrade and troubleshooting sections
+
+---
+
+**Last Updated**: January 24, 2025  
 **Terraform Version**: >= 1.6  
 **Terragrunt Version**: >= 0.54  
-**AWS Provider**: >= 5.0, < 6.0
+**AWS Provider**: >= 5.0, < 6.0  
+**Soda Agent Chart Version**: 1.3.13 (pinned)

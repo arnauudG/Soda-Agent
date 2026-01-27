@@ -126,8 +126,10 @@ inputs = {
   cluster_name    = local.cluster_name
   cluster_version = "1.31"
 
+  # Get VPC and subnet IDs from dependency outputs (not hardcoded)
   vpc_id     = dependency.vpc.outputs.vpc_id
   subnet_ids = dependency.vpc.outputs.private_subnets
+  # Get security group ID from dependency output (not hardcoded)
   ops_security_group_id = dependency.sg_ops.outputs.security_group_id
 
   enable_irsa = true
@@ -217,6 +219,7 @@ inputs = {
       protocol                 = "tcp"
       from_port                = 443
       to_port                  = 443
+      # Get security group ID from dependency output (not hardcoded)
       source_security_group_id = dependency.sg_ops.outputs.security_group_id
     }
   }

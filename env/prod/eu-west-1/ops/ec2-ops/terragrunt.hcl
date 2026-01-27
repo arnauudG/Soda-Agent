@@ -104,11 +104,14 @@ terraform {
 }
 
 inputs = {
-  name              = "${local.org}-${local.env}-ops"
-  vpc_id            = dependency.vpc.outputs.vpc_id
+  name = "${local.org}-${local.env}-ops"
+  # Get VPC ID from dependency output (not hardcoded)
+  vpc_id = dependency.vpc.outputs.vpc_id
+  # Note: AMI SSM parameter is intentionally "hardcoded" - it's a standard AWS parameter for latest AL2023 AMI
   ami_ssm_parameter = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
   instance_type     = local.instance_config.instance_type
 
+  # Get subnet ID from dependency output (not hardcoded) - use first public subnet
   subnet_id                   = dependency.vpc.outputs.public_subnets[0]
   associate_public_ip_address = true
 
@@ -121,6 +124,7 @@ inputs = {
   iam_role_name               = "${local.org}-${local.env}-ops-role"
 
   # IAM policies for ops instance
+  # Note: These are AWS managed policy ARNs - intentionally "hardcoded" as they are standard AWS policies
   iam_role_policies = {
     ssm = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
     eks = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
@@ -130,7 +134,8 @@ inputs = {
     cloudwatch_logs = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
   }
 
-  create_security_group  = false
+  create_security_group = false
+  # Get security group ID from dependency output (not hardcoded)
   vpc_security_group_ids = [dependency.sg_ops.outputs.security_group_id]
 
   monitoring = true

@@ -20,6 +20,8 @@ locals {
     Region = local.aws_region
   })
   
+  modules_root = local.parent.locals.modules_root
+  
   # State bucket and lock table names
   state_bucket = "${get_aws_account_id()}-${local.org}-${local.env}-tfstate-${local.aws_region}"
   lock_table   = "${get_aws_account_id()}-${local.org}-${local.env}-tf-locks"
@@ -64,13 +66,14 @@ dependency "vpc" {
 }
 
 terraform {
-  source = "${local.parent.locals.modules_root}/security/security-group/ops"
+  source = "${local.modules_root}/security/security-group/ops"
 }
 
 inputs = {
   name        = "${local.org}-${local.env}-ops-sg"
   description = "Security group for ops EC2 instance - allows SSM, ECR, EKS access via VPC endpoints"
-  vpc_id      = dependency.vpc.outputs.vpc_id
+  # Get VPC ID from dependency output (not hardcoded)
+  vpc_id = dependency.vpc.outputs.vpc_id
 
   # No inbound rules - access via SSM Session Manager only
   ingress_rules = []
@@ -83,6 +86,7 @@ inputs = {
       to_port     = 443
       protocol    = "tcp"
       description = "HTTPS to VPC endpoints (SSM, ECR, STS, CloudWatch Logs)"
+      # Get VPC CIDR block from dependency output (not hardcoded)
       cidr_blocks = dependency.vpc.outputs.vpc_cidr_block
     },
     # DNS resolution via VPC DNS resolver
@@ -91,6 +95,7 @@ inputs = {
       to_port     = 53
       protocol    = "udp"
       description = "DNS UDP to VPC resolver"
+      # Get VPC CIDR block from dependency output (not hardcoded)
       cidr_blocks = dependency.vpc.outputs.vpc_cidr_block
     },
     {
@@ -98,6 +103,7 @@ inputs = {
       to_port     = 53
       protocol    = "tcp"
       description = "DNS TCP to VPC resolver"
+      # Get VPC CIDR block from dependency output (not hardcoded)
       cidr_blocks = dependency.vpc.outputs.vpc_cidr_block
     },
     # NTP for time synchronization (AWS Time Sync service)
