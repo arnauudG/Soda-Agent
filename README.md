@@ -1567,6 +1567,14 @@ If you encounter agent ID issues or need to start completely fresh:
 - **Bug Resolution**: Resolved NullPointerException instruction fetching bug via upgrade
 - **Production Configuration**: Updated prod environment to match dev configuration
 - **Documentation**: Enhanced upgrade and troubleshooting sections
+- **Collibra DQ Integration**: Added Collibra DQ Helm module and RDS PostgreSQL database architecture
+- **Dependency Management**: Removed hardcodings and standardized dependency usage across all terragrunt files
+
+### **Future Enhancements**
+
+- **CI/CD Pipeline**: Automated deployment workflows (GitHub Actions, GitLab CI, etc.) - planned for future implementation
+- **Automated Testing**: Integration tests for infrastructure deployments
+- **Monitoring & Alerting**: Enhanced observability and alerting for deployed components
 
 ---
 
