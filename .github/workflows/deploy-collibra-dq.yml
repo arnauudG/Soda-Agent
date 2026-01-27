@@ -1,0 +1,267 @@
+name: Deploy Collibra DQ
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+      region:
+        description: 'AWS region'
+        required: true
+        type: choice
+        options:
+          - eu-west-1
+        default: 'eu-west-1'
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+        default: 'plan'
+      deploy_rds:
+        description: 'Deploy RDS database (required for first deployment)'
+        required: false
+        type: boolean
+        default: true
+  push:
+    branches:
+      - main
+    paths:
+      - 'env/**/addons/collibra-dq/**'
+      - 'env/**/database/rds-collibra-dq/**'
+      - 'module/application/helm/collibra-dq/**'
+      - 'module/database/rds/**'
+      - '.github/workflows/deploy-collibra-dq.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'env/**/addons/collibra-dq/**'
+      - 'env/**/database/rds-collibra-dq/**'
+      - 'module/application/helm/collibra-dq/**'
+      - 'module/database/rds/**'
+      - '.github/workflows/deploy-collibra-dq.yml'
+
+env:
+  AWS_REGION: eu-west-1
+  TF_IN_AUTOMATION: true
+
+jobs:
+  deploy-rds:
+    name: Deploy RDS PostgreSQL
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    if: github.event.inputs.deploy_rds != 'false' || github.event_name == 'push' || github.event_name == 'pull_request'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ github.event.inputs.region || env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Setup Terragrunt
+        uses: autero1/action-terragrunt@v0.2.0
+        with:
+          terragrunt_version: '0.54.0'
+
+      - name: Deploy RDS Security Group
+        if: github.event.inputs.action == 'apply' || github.event_name == 'push'
+        working-directory: env/${{ github.event.inputs.environment || 'dev' }}/${{ github.event.inputs.region || env.AWS_REGION }}/database/rds-collibra-dq/sg-rds
+        run: |
+          if [ "${{ github.event.inputs.action }}" == "destroy" ]; then
+            terragrunt destroy -auto-approve
+          else
+            terragrunt plan -out=tfplan
+            terragrunt apply -auto-approve
+          fi
+
+      - name: Deploy RDS PostgreSQL
+        if: github.event.inputs.action == 'apply' || github.event_name == 'push'
+        working-directory: env/${{ github.event.inputs.environment || 'dev' }}/${{ github.event.inputs.region || env.AWS_REGION }}/database/rds-collibra-dq/rds
+        run: |
+          if [ "${{ github.event.inputs.action }}" == "destroy" ]; then
+            terragrunt destroy -auto-approve
+          else
+            terragrunt plan -out=tfplan
+            terragrunt apply -auto-approve
+          fi
+        env:
+          COLLIBRA_DQ_RDS_PASSWORD: ${{ secrets.COLLIBRA_DQ_RDS_PASSWORD }}
+
+      - name: Plan RDS (PR only)
+        if: github.event_name == 'pull_request'
+        working-directory: env/${{ github.event.inputs.environment || 'dev' }}/${{ github.event.inputs.region || env.AWS_REGION }}/database/rds-collibra-dq/rds
+        run: |
+          terragrunt plan -out=tfplan
+          terragrunt show -no-color tfplan > plan-rds.txt
+
+      - name: Upload RDS Plan Artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terragrunt-plan-rds-${{ github.event.inputs.environment || 'dev' }}
+          path: env/${{ github.event.inputs.environment || 'dev' }}/${{ github.event.inputs.region || env.AWS_REGION }}/database/rds-collibra-dq/rds/plan-rds.txt
+
+  deploy-collibra-dq:
+    name: Deploy Collibra DQ
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    needs: deploy-rds
+    if: always() && (needs.deploy-rds.result == 'success' || needs.deploy-rds.result == 'skipped')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ github.event.inputs.region || env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Setup Terragrunt
+        uses: autero1/action-terragrunt@v0.2.0
+        with:
+          terragrunt_version: '0.54.0'
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.13.0'
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: '1.31'
+
+      - name: Verify required environment variables
+        run: |
+          if [ -z "${{ secrets.COLLIBRA_DQ_LICENSE_KEY }}" ]; then
+            echo "Error: COLLIBRA_DQ_LICENSE_KEY secret must be set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.COLLIBRA_DQ_IMAGE_REGISTRY_USERNAME }}" ] || [ -z "${{ secrets.COLLIBRA_DQ_IMAGE_REGISTRY_PASSWORD }}" ]; then
+            echo "Error: COLLIBRA_DQ_IMAGE_REGISTRY_USERNAME and COLLIBRA_DQ_IMAGE_REGISTRY_PASSWORD secrets must be set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.COLLIBRA_DQ_CHART_REPO }}" ]; then
+            echo "Error: COLLIBRA_DQ_CHART_REPO secret must be set"
+            exit 1
+          fi
+          echo "✓ Required secrets are set"
+
+      - name: Set environment variables
+        run: |
+          echo "COLLIBRA_DQ_LICENSE_KEY=${{ secrets.COLLIBRA_DQ_LICENSE_KEY }}" >> $GITHUB_ENV
+          echo "COLLIBRA_DQ_IMAGE_REGISTRY_URL=${{ secrets.COLLIBRA_DQ_IMAGE_REGISTRY_URL }}" >> $GITHUB_ENV
+          echo "COLLIBRA_DQ_IMAGE_REGISTRY_USERNAME=${{ secrets.COLLIBRA_DQ_IMAGE_REGISTRY_USERNAME }}" >> $GITHUB_ENV
+          echo "COLLIBRA_DQ_IMAGE_REGISTRY_PASSWORD=${{ secrets.COLLIBRA_DQ_IMAGE_REGISTRY_PASSWORD }}" >> $GITHUB_ENV
+          echo "COLLIBRA_DQ_CHART_REPO=${{ secrets.COLLIBRA_DQ_CHART_REPO }}" >> $GITHUB_ENV
+          if [ -n "${{ secrets.COLLIBRA_DQ_CHART_VERSION }}" ]; then
+            echo "COLLIBRA_DQ_CHART_VERSION=${{ secrets.COLLIBRA_DQ_CHART_VERSION }}" >> $GITHUB_ENV
+          fi
+          if [ -n "${{ secrets.COLLIBRA_DQ_CHART_NAME }}" ]; then
+            echo "COLLIBRA_DQ_CHART_NAME=${{ secrets.COLLIBRA_DQ_CHART_NAME }}" >> $GITHUB_ENV
+          fi
+
+      - name: Add Collibra Helm repository
+        if: github.event.inputs.action != 'destroy'
+        run: |
+          helm repo add collibra-dq "${{ secrets.COLLIBRA_DQ_CHART_REPO }}"
+          helm repo update collibra-dq
+
+      - name: Configure kubectl for EKS
+        run: |
+          ENV="${{ github.event.inputs.environment || 'dev' }}"
+          REGION="${{ github.event.inputs.region || env.AWS_REGION }}"
+          CLUSTER_NAME=$(aws eks list-clusters --region $REGION --query "clusters[?contains(@, '$ENV')]" --output text | head -n 1)
+          
+          if [ -z "$CLUSTER_NAME" ]; then
+            echo "Error: EKS cluster not found for environment $ENV"
+            exit 1
+          fi
+          
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION
+          kubectl config get-contexts
+
+      - name: Terragrunt Plan
+        if: github.event.inputs.action == 'plan' || github.event_name == 'pull_request'
+        working-directory: env/${{ github.event.inputs.environment || 'dev' }}/${{ github.event.inputs.region || env.AWS_REGION }}/addons/collibra-dq
+        run: |
+          terragrunt plan -out=tfplan
+          terragrunt show -no-color tfplan > plan.txt
+
+      - name: Upload Plan Artifact
+        if: github.event.inputs.action == 'plan' || github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terragrunt-plan-collibra-dq-${{ github.event.inputs.environment || 'dev' }}
+          path: env/${{ github.event.inputs.environment || 'dev' }}/${{ github.event.inputs.region || env.AWS_REGION }}/addons/collibra-dq/plan.txt
+
+      - name: Terragrunt Apply
+        if: github.event.inputs.action == 'apply' && github.event_name == 'workflow_dispatch'
+        working-directory: env/${{ github.event.inputs.environment || 'dev' }}/${{ github.event.inputs.region || env.AWS_REGION }}/addons/collibra-dq
+        run: |
+          terragrunt apply -auto-approve
+
+      - name: Terragrunt Destroy
+        if: github.event.inputs.action == 'destroy' && github.event_name == 'workflow_dispatch'
+        working-directory: env/${{ github.event.inputs.environment || 'dev' }}/${{ github.event.inputs.region || env.AWS_REGION }}/addons/collibra-dq
+        run: |
+          terragrunt destroy -auto-approve
+
+      - name: Verify deployment
+        if: github.event.inputs.action == 'apply' && github.event_name == 'workflow_dispatch'
+        run: |
+          ENV="${{ github.event.inputs.environment || 'dev' }}"
+          REGION="${{ github.event.inputs.region || env.AWS_REGION }}"
+          
+          echo "Verifying Collibra DQ deployment..."
+          helm list -n collibra-dq
+          kubectl get pods -n collibra-dq
+          kubectl get svc -n collibra-dq
+          
+          echo ""
+          echo "Verifying RDS connection..."
+          kubectl logs -n collibra-dq -l app.kubernetes.io/name=collibra-dq --tail=20 || true
+          
+          echo ""
+          echo "✓ Deployment verification complete"
+
+      - name: Comment PR with Plan
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('env/${{ github.event.inputs.environment || 'dev' }}/${{ github.event.inputs.region || env.AWS_REGION }}/addons/collibra-dq/plan.txt', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '## Terraform Plan for Collibra DQ\n\n```\n' + plan + '\n```'
+            });

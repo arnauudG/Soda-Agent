@@ -1,0 +1,131 @@
+terraform {
+  required_version = ">= 1.5.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.0"
+    }
+  }
+}
+
+# Generate random password if not provided
+resource "random_password" "master_password" {
+  count   = var.create_random_password && var.master_password == "" ? 1 : 0
+  length  = 32
+  special = true
+  override_special = "!#$%&*()-_=+[]{}<>:?"
+}
+
+locals {
+  master_password = var.master_password != "" ? var.master_password : random_password.master_password[0].result
+  final_snapshot_name = var.final_snapshot_identifier != "" ? var.final_snapshot_identifier : "${var.name}-final-snapshot-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
+}
+
+# DB Subnet Group
+resource "aws_db_subnet_group" "this" {
+  name       = "${var.name}-subnet-group"
+  subnet_ids = var.subnet_ids
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.name}-subnet-group"
+    }
+  )
+}
+
+# DB Parameter Group (optional - uses defaults if not specified)
+resource "aws_db_parameter_group" "this" {
+  name   = "${var.name}-parameter-group"
+  family = "postgres15"
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.name}-parameter-group"
+    }
+  )
+}
+
+# DB Instance
+resource "aws_db_instance" "this" {
+  identifier = var.name
+
+  engine         = "postgres"
+  engine_version = var.engine_version
+  instance_class = var.instance_class
+
+  allocated_storage     = var.allocated_storage
+  max_allocated_storage  = var.max_allocated_storage
+  storage_type          = var.storage_type
+  storage_encrypted     = var.storage_encrypted
+
+  db_name  = var.database_name
+  username = var.master_username
+  password = local.master_password
+
+  db_subnet_group_name   = aws_db_subnet_group.this.name
+  parameter_group_name    = aws_db_parameter_group.this.name
+  vpc_security_group_ids  = var.security_group_ids
+
+  backup_retention_period = var.backup_retention_period
+  backup_window           = var.backup_window
+  maintenance_window      = var.maintenance_window
+
+  multi_az               = var.multi_az
+  deletion_protection    = var.deletion_protection
+  skip_final_snapshot    = var.skip_final_snapshot
+  final_snapshot_identifier = var.skip_final_snapshot ? null : local.final_snapshot_name
+
+  enabled_cloudwatch_logs_exports = var.enabled_cloudwatch_logs_exports
+
+  performance_insights_enabled          = var.performance_insights_enabled
+  performance_insights_retention_period = var.performance_insights_enabled ? var.performance_insights_retention_period : null
+
+  monitoring_interval = var.monitoring_interval
+  monitoring_role_arn = var.monitoring_interval > 0 ? aws_iam_role.rds_enhanced_monitoring[0].arn : null
+
+  # Auto minor version upgrade
+  auto_minor_version_upgrade = true
+
+  # Public access disabled (private only)
+  publicly_accessible = false
+
+  tags = merge(
+    var.tags,
+    {
+      Name = var.name
+    }
+  )
+}
+
+# IAM Role for Enhanced Monitoring (if enabled)
+resource "aws_iam_role" "rds_enhanced_monitoring" {
+  count = var.monitoring_interval > 0 ? 1 : 0
+  name  = "${var.name}-rds-monitoring-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "monitoring.rds.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "rds_enhanced_monitoring" {
+  count      = var.monitoring_interval > 0 ? 1 : 0
+  role       = aws_iam_role.rds_enhanced_monitoring[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
+}

@@ -991,6 +991,265 @@ soda:
 - ✅ Network access: All required FQDNs are accessible (verified via connectivity tests)
 - ✅ Security groups: EKS nodes allow all outbound traffic (0.0.0.0/0)
 
+## **Collibra DQ Deployment**
+
+### **Overview**
+
+Collibra Data Quality & Observability Classic (DQ) is deployed as a Helm chart on the EKS cluster. This addon follows the same architecture pattern as the Soda Agent deployment.
+
+### **Prerequisites**
+
+Before deploying Collibra DQ, ensure you have:
+
+1. **EKS Cluster**: The cluster must be deployed and accessible
+2. **RDS PostgreSQL Database**: 
+   - An RDS PostgreSQL instance is automatically created as part of the deployment
+   - Version: PostgreSQL 15.4 (configurable)
+   - Storage: 100GB minimum (auto-scaling enabled)
+   - Instance class: `db.t3.medium` (dev) or `db.t3.large` (prod)
+   - **Note**: Collibra recommends using an external PostgreSQL metastore rather than the bundled one
+3. **Private Container Registry**: Access credentials for Collibra's private image registry
+4. **License Key**: Valid Collibra DQ license key
+5. **Helm Chart**: Access to Collibra DQ Helm chart repository (provided by Collibra support)
+
+### **System Requirements**
+
+**Supported Kubernetes Versions**: 1.29 through 1.33
+
+**Component Resource Requirements** (minimum):
+- **DQ Web**: 1 core, 2GB RAM, 10MB PVC
+- **DQ Agent**: 1 core, 1GB RAM, 100MB PVC
+- **DQ Metastore**: 1 core, 2GB RAM, 10GB PVC (if using bundled PostgreSQL)
+- **Spark**: 2 cores, 2GB RAM (minimum - scales based on workload)
+
+**Note**: Spark allocates overhead memory on top of requested memory. For example, an executor pod configured with 6GB may actually request 6.8GB. See [Apache Spark Memory Management](https://spark.apache.org/docs/latest/configuration.html#memory-management) for details.
+
+### **Environment Variables Setup**
+
+**Required Variables**:
+```bash
+# License key (required)
+export COLLIBRA_DQ_LICENSE_KEY="your-license-key"
+
+# Image registry credentials (required for private registry)
+export COLLIBRA_DQ_IMAGE_REGISTRY_URL="registry.collibra.com"  # Update with actual registry URL
+export COLLIBRA_DQ_IMAGE_REGISTRY_USERNAME="your-registry-username"
+export COLLIBRA_DQ_IMAGE_REGISTRY_PASSWORD="your-registry-password"
+
+# Helm chart configuration (required)
+export COLLIBRA_DQ_CHART_REPO="https://your-collibra-helm-repo-url"  # Provided by Collibra support
+export COLLIBRA_DQ_CHART_VERSION=""  # Empty for latest, or specify version
+export COLLIBRA_DQ_CHART_NAME="collibra-dq"
+```
+
+**Optional Variables**:
+- `COLLIBRA_DQ_CHART_VERSION`: Specific chart version to deploy (defaults to latest if empty)
+- `COLLIBRA_DQ_RDS_PASSWORD`: RDS master password (if not set, a random password will be generated)
+
+### **Deployment Steps**
+
+**Important**: Collibra DQ requires RDS PostgreSQL to be deployed first. Deploy in this order:
+
+1. **Set Environment Variables**:
+   ```bash
+   # Set all required environment variables (see above)
+   export COLLIBRA_DQ_LICENSE_KEY="..."
+   export COLLIBRA_DQ_IMAGE_REGISTRY_USERNAME="..."
+   export COLLIBRA_DQ_IMAGE_REGISTRY_PASSWORD="..."
+   export COLLIBRA_DQ_CHART_REPO="..."
+   # Optional: Set RDS password (otherwise auto-generated)
+   export COLLIBRA_DQ_RDS_PASSWORD="your-secure-password"
+   ```
+
+2. **Deploy RDS Security Group** (Phase 1):
+   ```bash
+   # For dev environment
+   cd env/dev/eu-west-1/database/rds-collibra-dq/sg-rds
+   terragrunt plan
+   terragrunt apply
+   
+   # For prod environment
+   cd env/prod/eu-west-1/database/rds-collibra-dq/sg-rds
+   terragrunt plan
+   terragrunt apply
+   ```
+
+3. **Deploy RDS PostgreSQL** (Phase 2):
+   ```bash
+   # For dev environment
+   cd env/dev/eu-west-1/database/rds-collibra-dq/rds
+   terragrunt plan   # Review changes
+   terragrunt apply  # Deploy RDS (takes ~10-15 minutes)
+   
+   # For prod environment
+   cd env/prod/eu-west-1/database/rds-collibra-dq/rds
+   terragrunt plan
+   terragrunt apply
+   ```
+
+4. **Deploy Collibra DQ** (Phase 3):
+   ```bash
+   # For dev environment
+   cd env/dev/eu-west-1/addons/collibra-dq
+   terragrunt plan   # Review changes
+   terragrunt apply  # Deploy Collibra DQ
+   
+   # For prod environment
+   cd env/prod/eu-west-1/addons/collibra-dq
+   terragrunt plan
+   terragrunt apply
+   ```
+
+3. **Verify Deployment**:
+   ```bash
+   # Check Helm release status
+   helm list -n collibra-dq
+   
+   # Check pod status
+   kubectl get pods -n collibra-dq
+   
+   # Check service (DQ Web)
+   kubectl get svc -n collibra-dq
+   
+   # View logs
+   kubectl logs -n collibra-dq -l app.kubernetes.io/name=collibra-dq --tail=50
+   ```
+
+### **Network Requirements**
+
+**Default Ports Used by Collibra DQ**:
+- **443**: Connectivity to data sources (databases, file storage, etc.)
+- **5432**: DQ Metastore (PostgreSQL) - internal cluster communication
+- **9000**: DQ Web service
+- **9101**: Health Check API for DQ Agent
+
+**Egress Requirements**:
+- Outbound access to data sources (port 443)
+- Outbound access to PostgreSQL database (port 5432)
+- Outbound access to Collibra image registry
+- DNS resolution for external services
+
+**Ingress Requirements**:
+- DQ Web service must be accessible (LoadBalancer or Ingress)
+- Health check endpoint (port 9101) for monitoring
+
+### **Service Configuration**
+
+The deployment supports three service types for DQ Web:
+
+- **LoadBalancer** (default): Creates an AWS Load Balancer for external access
+- **NodePort**: Exposes service on a node port (for testing)
+- **ClusterIP**: Internal-only access (use with Ingress)
+
+**Note**: For production, consider using Ingress with proper TLS termination instead of LoadBalancer.
+
+### **Resource Scaling**
+
+The default configuration uses minimum resource requirements. For production workloads, adjust resources based on:
+
+- **Concurrency**: Number of concurrent DQ jobs
+- **Data Volume**: Size of largest datasets to scan
+- **Performance**: Desired scan performance
+
+**Scaling Guidelines**:
+- Each DQ job consumes approximately 400 threads
+- DQ services typically consume ~428 threads
+- Set `ULIMIT` to 4096 or higher for multiple concurrent jobs
+- Spark executor memory should be sized based on data volume (see Collibra DQ documentation for sizing tables)
+
+### **RDS PostgreSQL Database**
+
+**Architecture**: An RDS PostgreSQL instance is automatically created and configured as the Collibra DQ metastore.
+
+**Database Configuration**:
+
+**Dev Environment**:
+- **Instance Class**: `db.t3.medium` (2 vCPU, 4GB RAM)
+- **Storage**: 100GB initial, auto-scales up to 200GB
+- **Multi-AZ**: Disabled (single AZ for cost savings)
+- **Backup Retention**: 7 days
+- **Deletion Protection**: Disabled
+- **Performance Insights**: Disabled
+
+**Prod Environment**:
+- **Instance Class**: `db.t3.large` (2 vCPU, 8GB RAM)
+- **Storage**: 100GB initial, auto-scales up to 500GB
+- **Multi-AZ**: Enabled (high availability)
+- **Backup Retention**: 30 days
+- **Deletion Protection**: Enabled
+- **Performance Insights**: Enabled (7-day retention)
+
+**Database Details**:
+- **Engine**: PostgreSQL 15.4
+- **Database Name**: `collibra_dq`
+- **Master Username**: `collibra_dq_admin`
+- **Master Password**: Auto-generated (or set via `COLLIBRA_DQ_RDS_PASSWORD` env var)
+- **Network**: Deployed in private subnets, accessible only from EKS nodes
+- **Security**: Encrypted at rest, accessible only via security group rules
+
+**Database Initialization**:
+The Collibra DQ Helm chart will handle database schema creation automatically. The RDS instance is created with the necessary database and user permissions.
+
+**Accessing RDS Password**:
+If a random password was generated, retrieve it from Terraform outputs:
+```bash
+cd env/dev/eu-west-1/database/rds-collibra-dq/rds
+terragrunt output db_instance_password
+```
+
+**Note**: The password is automatically passed to Collibra DQ via dependency outputs - no manual configuration needed.
+
+### **Troubleshooting**
+
+**Problem**: Pods stuck in ImagePullBackOff
+- **Solution**: Verify image registry credentials are correct and the registry URL is accessible from the cluster
+
+**Problem**: DQ Web not accessible
+- **Solution**: Check LoadBalancer/Ingress configuration and security group rules
+
+**Problem**: Database connection failures
+- **Solution**: 
+  - Verify RDS instance is running: `aws rds describe-db-instances --db-instance-identifier <name>`
+  - Check RDS security group allows access from EKS node security group
+  - Verify RDS is in the same VPC as EKS cluster
+  - Check RDS endpoint and credentials from Terraform outputs
+
+**Problem**: License validation errors
+- **Solution**: Verify license key is valid and correctly set in environment variable
+
+### **Upgrading Collibra DQ**
+
+To upgrade Collibra DQ:
+
+1. **Update Chart Version**:
+   ```bash
+   export COLLIBRA_DQ_CHART_VERSION="new-version"
+   ```
+
+2. **Apply Changes**:
+   ```bash
+   cd env/dev/eu-west-1/addons/collibra-dq
+   terragrunt plan   # Review upgrade changes
+   terragrunt apply  # Apply upgrade
+   ```
+
+3. **Verify Upgrade**:
+   ```bash
+   helm list -n collibra-dq
+   kubectl get pods -n collibra-dq
+   kubectl logs -n collibra-dq -l app.kubernetes.io/name=collibra-dq
+   ```
+
+**Note**: Always review Collibra DQ release notes for breaking changes before upgrading.
+
+### **Architecture Notes**
+
+- **Namespace**: `collibra-dq` (configurable)
+- **Release Name**: `collibra-dq` (configurable)
+- **Dependencies**: Requires EKS cluster to be deployed first
+- **State Management**: Uses Terraform remote state (S3 backend)
+- **Secrets**: License key and PostgreSQL credentials are stored as Kubernetes secrets
+
 ## **Upgrading Soda Agent**
 
 ### **Overview**

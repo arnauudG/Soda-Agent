@@ -1,0 +1,182 @@
+name: Deploy Soda Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+      region:
+        description: 'AWS region'
+        required: true
+        type: choice
+        options:
+          - eu-west-1
+        default: 'eu-west-1'
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+        default: 'plan'
+  push:
+    branches:
+      - main
+    paths:
+      - 'env/**/addons/soda-agent/**'
+      - 'module/application/helm/soda-agent/**'
+      - '.github/workflows/deploy-soda-agent.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'env/**/addons/soda-agent/**'
+      - 'module/application/helm/soda-agent/**'
+      - '.github/workflows/deploy-soda-agent.yml'
+
+env:
+  AWS_REGION: eu-west-1
+  TF_IN_AUTOMATION: true
+
+jobs:
+  deploy:
+    name: Deploy Soda Agent
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ github.event.inputs.region || env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Setup Terragrunt
+        uses: autero1/action-terragrunt@v0.2.0
+        with:
+          terragrunt_version: '0.54.0'
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.13.0'
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: '1.31'
+
+      - name: Verify required environment variables
+        run: |
+          if [ -z "${{ secrets.SODA_API_KEY_ID }}" ] || [ -z "${{ secrets.SODA_API_KEY_SECRET }}" ]; then
+            echo "Error: SODA_API_KEY_ID and SODA_API_KEY_SECRET secrets must be set"
+            exit 1
+          fi
+          echo "✓ Required secrets are set"
+
+      - name: Set environment variables
+        run: |
+          echo "SODA_API_KEY_ID=${{ secrets.SODA_API_KEY_ID }}" >> $GITHUB_ENV
+          echo "SODA_API_KEY_SECRET=${{ secrets.SODA_API_KEY_SECRET }}" >> $GITHUB_ENV
+          # Optional: Set image registry credentials if different from API keys
+          if [ -n "${{ secrets.SODA_IMAGE_APIKEY_ID }}" ]; then
+            echo "SODA_IMAGE_APIKEY_ID=${{ secrets.SODA_IMAGE_APIKEY_ID }}" >> $GITHUB_ENV
+          fi
+          if [ -n "${{ secrets.SODA_IMAGE_APIKEY_SECRET }}" ]; then
+            echo "SODA_IMAGE_APIKEY_SECRET=${{ secrets.SODA_IMAGE_APIKEY_SECRET }}" >> $GITHUB_ENV
+          fi
+          # Optional: Set cloud region
+          if [ -n "${{ secrets.SODA_CLOUD_REGION }}" ]; then
+            echo "SODA_CLOUD_REGION=${{ secrets.SODA_CLOUD_REGION }}" >> $GITHUB_ENV
+          else
+            echo "SODA_CLOUD_REGION=eu" >> $GITHUB_ENV
+          fi
+
+      - name: Add Soda Helm repository
+        run: |
+          helm repo add soda-agent https://helm.soda.io/soda-agent/
+          helm repo update soda-agent
+
+      - name: Configure kubectl for EKS
+        run: |
+          ENV="${{ github.event.inputs.environment || 'dev' }}"
+          REGION="${{ github.event.inputs.region || env.AWS_REGION }}"
+          CLUSTER_NAME=$(aws eks list-clusters --region $REGION --query "clusters[?contains(@, '$ENV')]" --output text | head -n 1)
+          
+          if [ -z "$CLUSTER_NAME" ]; then
+            echo "Error: EKS cluster not found for environment $ENV"
+            exit 1
+          fi
+          
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION
+          kubectl config get-contexts
+
+      - name: Terragrunt Plan
+        if: github.event.inputs.action == 'plan' || github.event_name == 'pull_request'
+        working-directory: env/${{ github.event.inputs.environment || 'dev' }}/${{ github.event.inputs.region || env.AWS_REGION }}/addons/soda-agent
+        run: |
+          terragrunt plan -out=tfplan
+          terragrunt show -no-color tfplan > plan.txt
+          
+      - name: Upload Plan Artifact
+        if: github.event.inputs.action == 'plan' || github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terragrunt-plan-${{ github.event.inputs.environment || 'dev' }}
+          path: env/${{ github.event.inputs.environment || 'dev' }}/${{ github.event.inputs.region || env.AWS_REGION }}/addons/soda-agent/plan.txt
+
+      - name: Terragrunt Apply
+        if: github.event.inputs.action == 'apply' && github.event_name == 'workflow_dispatch'
+        working-directory: env/${{ github.event.inputs.environment || 'dev' }}/${{ github.event.inputs.region || env.AWS_REGION }}/addons/soda-agent
+        run: |
+          terragrunt apply -auto-approve
+
+      - name: Terragrunt Destroy
+        if: github.event.inputs.action == 'destroy' && github.event_name == 'workflow_dispatch'
+        working-directory: env/${{ github.event.inputs.environment || 'dev' }}/${{ github.event.inputs.region || env.AWS_REGION }}/addons/soda-agent
+        run: |
+          terragrunt destroy -auto-approve
+
+      - name: Verify deployment
+        if: github.event.inputs.action == 'apply' && github.event_name == 'workflow_dispatch'
+        run: |
+          ENV="${{ github.event.inputs.environment || 'dev' }}"
+          REGION="${{ github.event.inputs.region || env.AWS_REGION }}"
+          
+          echo "Verifying Soda Agent deployment..."
+          helm list -n soda-agent
+          kubectl get pods -n soda-agent
+          kubectl get svc -n soda-agent
+          
+          echo ""
+          echo "✓ Deployment verification complete"
+
+      - name: Comment PR with Plan
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('env/${{ github.event.inputs.environment || 'dev' }}/${{ github.event.inputs.region || env.AWS_REGION }}/addons/soda-agent/plan.txt', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '## Terraform Plan for Soda Agent\n\n```\n' + plan + '\n```'
+            });
