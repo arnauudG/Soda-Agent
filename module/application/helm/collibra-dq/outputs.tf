@@ -23,6 +23,16 @@ output "license_secret_name" {
   value       = kubernetes_secret.license.metadata[0].name
 }
 
+output "ssl_keystore_secret_name" {
+  description = "Name of the SSL keystore secret (if created)"
+  value       = var.ssl_keystore_path != "" ? kubernetes_secret.ssl_keystore[0].metadata[0].name : null
+}
+
+output "gcs_secret_name" {
+  description = "Name of the GCS credential secret (if created)"
+  value       = var.gcs_secret_path != "" ? kubernetes_secret.gcs[0].metadata[0].name : null
+}
+
 output "status" {
   description = "Helm release status"
   value       = helm_release.collibra_dq.status

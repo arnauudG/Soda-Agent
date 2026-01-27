@@ -114,7 +114,7 @@ terraform {
 }
 
 inputs = {
-  name = "${local.org}-${local.env}-collibra-dq"
+  name = "${local.org}-${local.env}-dqMetastore-collibra-dq"
   
   # Get VPC and subnet IDs from dependency outputs (not hardcoded)
   vpc_id     = dependency.vpc.outputs.vpc_id
@@ -124,7 +124,9 @@ inputs = {
   security_group_ids = [dependency.sg_rds.outputs.security_group_id]
 
   # PostgreSQL configuration
-  engine_version = "15.4"
+  # Using PostgreSQL 15.13 (available in AWS RDS eu-west-1 as of Jan 2025)
+  # Available versions: 15.10, 15.12, 15.13, 15.14, 15.15
+  engine_version = "15.13"
   instance_class = local.rds_config.instance_class
   
   # Storage configuration
@@ -134,7 +136,7 @@ inputs = {
   storage_encrypted     = true
 
   # Database configuration
-  database_name  = "collibra_dq"
+  database_name  = "dqMetastore"
   master_username = "collibra_dq_admin"
   # Password will be auto-generated if COLLIBRA_DQ_RDS_PASSWORD is not set
   master_password = get_env("COLLIBRA_DQ_RDS_PASSWORD", "")

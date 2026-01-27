@@ -64,18 +64,21 @@ dependency "vpc" {
   mock_outputs_allowed_terraform_commands = ["init", "plan"]
 }
 
-dependency "eks" {
-  config_path = "../../../eks"
-  mock_outputs = {
-    node_security_group_id = "sg-123456"
-  }
-  mock_outputs_allowed_terraform_commands = ["init", "plan"]
-}
+# EKS dependency - optional for now (commented out until EKS is deployed)
+# Uncomment and add to dependencies once EKS cluster is deployed
+# dependency "eks" {
+#   config_path = "../../../eks"
+#   mock_outputs = {
+#     node_security_group_id = "sg-mock-123456"
+#     cluster_name           = "mock-cluster"
+#   }
+#   mock_outputs_allowed_terraform_commands = ["init", "plan"]
+# }
 
 dependencies {
   paths = [
-    "../../../network/vpc",
-    "../../../eks"
+    "../../../network/vpc"
+    # "../../../eks"  # Uncomment once EKS cluster is deployed
   ]
 }
 
@@ -89,12 +92,15 @@ inputs = {
   # Get VPC ID from dependency output (not hardcoded)
   vpc_id = dependency.vpc.outputs.vpc_id
 
-  # Allow access from EKS node security group
-  # Get node security group ID from EKS module output (not hardcoded)
-  allowed_security_group_ids = [dependency.eks.outputs.node_security_group_id]
+  # Allow access from VPC CIDR block (works regardless of EKS deployment status)
+  # This allows RDS to be accessible from any resource in the VPC (including EKS nodes)
+  # Get VPC CIDR block from dependency output (not hardcoded)
+  # Note: Once EKS is deployed, you can optionally restrict to EKS node security group for tighter security
+  allowed_cidr_blocks = [dependency.vpc.outputs.vpc_cidr_block]
   
-  # Optionally allow access from VPC CIDR (for ops instance access)
-  # allowed_cidr_blocks = [dependency.vpc.outputs.vpc_cidr_block]
+  # Optionally allow access from EKS node security group (uncomment after EKS is deployed)
+  # Get node security group ID from EKS module output (not hardcoded)
+  # allowed_security_group_ids = [dependency.eks.outputs.node_security_group_id]
 
   port = 5432
 

@@ -1,0 +1,161 @@
+#!/bin/bash
+set -euxo pipefail
+
+# Collibra DQ Spark Standalone Installation Script
+# This script installs Collibra DQ on an EC2 instance with Spark Standalone
+
+# --------- template vars (Terraform renders these) ---------
+REGION="${region}"
+OWL_BASE="${owl_base}"
+OWL_METASTORE_USER="${owl_metastore_user}"
+OWL_METASTORE_PASS="${owl_metastore_pass}"
+POSTGRESQL_HOST="${postgresql_host}"
+POSTGRESQL_PORT="${postgresql_port}"
+POSTGRESQL_DATABASE="${postgresql_database}"
+SPARK_PACKAGE="${spark_package}"
+DQ_ADMIN_USER_PASSWORD="${dq_admin_user_password}"
+DQ_PACKAGE_URL="${dq_package_url}"
+DQ_PACKAGE_FILENAME="${dq_package_filename}"
+
+# Always (re)enable & restart SSM even if something fails
+finish() {
+  systemctl enable --now amazon-ssm-agent || true
+  systemctl restart amazon-ssm-agent || true
+}
+trap finish EXIT
+
+# Log all output
+exec > >(tee -a /var/log/collibra-dq-install.log) 2>&1
+echo "Starting Collibra DQ installation at $(date)"
+
+# --------- Base system setup ---------
+dnf -y update
+dnf -y install unzip curl git jq wget tar gzip java-17-amazon-corretto-headless || true
+
+# Set JAVA_HOME
+export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
+export PATH=$JAVA_HOME/bin:$PATH
+echo "export JAVA_HOME=$JAVA_HOME" >> /etc/profile.d/java.sh
+echo "export PATH=\$JAVA_HOME/bin:\$PATH" >> /etc/profile.d/java.sh
+
+# Verify Java installation
+java -version || { echo "Java installation failed"; exit 1; }
+
+# --------- Create OWL_BASE directory ---------
+mkdir -p "$OWL_BASE"
+cd "$OWL_BASE"
+
+# --------- Download and extract Collibra DQ package ---------
+if [ -n "$DQ_PACKAGE_URL" ] && [ "$DQ_PACKAGE_URL" != "" ]; then
+  echo "Downloading Collibra DQ package from $DQ_PACKAGE_URL"
+  wget -q "$DQ_PACKAGE_URL" -O "$DQ_PACKAGE_FILENAME" || { echo "Failed to download DQ package"; exit 1; }
+  
+  echo "Extracting Collibra DQ package"
+  tar -xvf "$DQ_PACKAGE_FILENAME" || { echo "Failed to extract DQ package"; exit 1; }
+  
+  # Clean up
+  rm -f "$DQ_PACKAGE_FILENAME" || true
+else
+  echo "DQ_PACKAGE_URL not provided. Assuming package is already present or will be uploaded manually."
+  echo "Please ensure $DQ_PACKAGE_FILENAME is available in $OWL_BASE"
+fi
+
+# --------- Set environment variables ---------
+cat >> /etc/profile.d/collibra-dq.sh <<EOF
+export OWL_BASE=$OWL_BASE
+export OWL_METASTORE_USER=$OWL_METASTORE_USER
+export OWL_METASTORE_PASS=$OWL_METASTORE_PASS
+export SPARK_PACKAGE=$SPARK_PACKAGE
+export DQ_ADMIN_USER_PASSWORD=$DQ_ADMIN_USER_PASSWORD
+EOF
+
+# Source the environment variables
+source /etc/profile.d/collibra-dq.sh
+
+# --------- Run Collibra DQ setup script ---------
+# Using external PostgreSQL (RDS) - recommended approach
+# Format: pgserver="host:port/database"
+PG_SERVER="$POSTGRESQL_HOST:$POSTGRESQL_PORT/$POSTGRESQL_DATABASE"
+
+echo "Running Collibra DQ setup with external PostgreSQL: $PG_SERVER"
+
+# Find setup.sh in the extracted package
+SETUP_SCRIPT=$(find "$OWL_BASE" -name "setup.sh" -type f | head -1)
+
+if [ -z "$SETUP_SCRIPT" ]; then
+  echo "ERROR: setup.sh not found in $OWL_BASE"
+  echo "Please ensure the DQ package was extracted correctly"
+  exit 1
+fi
+
+chmod +x "$SETUP_SCRIPT"
+
+# Run setup with external PostgreSQL
+# Options: spark (required), owlweb (required), owlagent (required)
+# Omit postgres since we're using external RDS
+"$SETUP_SCRIPT" \
+  -owlbase="$OWL_BASE" \
+  -user="$OWL_METASTORE_USER" \
+  -pgpassword="$OWL_METASTORE_PASS" \
+  -options=spark,owlweb,owlagent \
+  -pgserver="$PG_SERVER" || { echo "Collibra DQ setup failed"; exit 1; }
+
+# --------- Configure firewall (if firewalld is installed) ---------
+if command -v firewall-cmd >/dev/null 2>&1; then
+  systemctl enable firewalld || true
+  systemctl start firewalld || true
+  firewall-cmd --permanent --add-port=9000/tcp || true  # DQ Web
+  firewall-cmd --permanent --add-port=9101/tcp || true  # DQ Agent Health Check
+  firewall-cmd --permanent --add-port=8080/tcp || true  # Spark Master Web UI
+  firewall-cmd --permanent --add-port=8081/tcp || true  # Spark Worker Web UI
+  firewall-cmd --reload || true
+fi
+
+# --------- Start Collibra DQ services ---------
+# Find owlmanage.sh script
+OWL_MANAGE_SCRIPT=$(find "$OWL_BASE" -name "owlmanage.sh" -type f | head -1)
+
+if [ -n "$OWL_MANAGE_SCRIPT" ]; then
+  chmod +x "$OWL_MANAGE_SCRIPT"
+  
+  # Source owl-env.sh if it exists
+  OWL_ENV_SCRIPT=$(find "$OWL_BASE" -name "owl-env.sh" -type f | head -1)
+  if [ -n "$OWL_ENV_SCRIPT" ]; then
+    source "$OWL_ENV_SCRIPT"
+  fi
+  
+  echo "Starting Collibra DQ services"
+  "$OWL_MANAGE_SCRIPT" start=all || { echo "Failed to start Collibra DQ services"; exit 1; }
+else
+  echo "WARNING: owlmanage.sh not found. Services may need to be started manually."
+fi
+
+# --------- Create systemd service for auto-start (optional) ---------
+# This ensures Collibra DQ starts on boot
+if [ -n "$OWL_MANAGE_SCRIPT" ]; then
+  cat > /etc/systemd/system/collibra-dq.service <<EOF
+[Unit]
+Description=Collibra DQ Services
+After=network.target
+
+[Service]
+Type=forking
+User=root
+WorkingDirectory=$OWL_BASE
+Environment="OWL_BASE=$OWL_BASE"
+ExecStart=$OWL_MANAGE_SCRIPT start=all
+ExecStop=$OWL_MANAGE_SCRIPT stop=all
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable collibra-dq.service || true
+fi
+
+echo "Collibra DQ installation completed at $(date)"
+echo "DQ Web should be available at http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):9000"
+echo "Default admin credentials: admin / (password set via DQ_ADMIN_USER_PASSWORD)"

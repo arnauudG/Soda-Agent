@@ -30,9 +30,16 @@ locals {
   license_key = get_env("COLLIBRA_DQ_LICENSE_KEY", "")
   
   # Image registry credentials from environment variables
-  image_registry_url      = get_env("COLLIBRA_DQ_IMAGE_REGISTRY_URL", "")
-  image_registry_username = get_env("COLLIBRA_DQ_IMAGE_REGISTRY_USERNAME", "")
+  # Default to gcr.io (Google Artifact Registry) - use _json_key username with repo-key.json content as password
+  image_registry_url      = get_env("COLLIBRA_DQ_IMAGE_REGISTRY_URL", "gcr.io")
+  image_registry_username = get_env("COLLIBRA_DQ_IMAGE_REGISTRY_USERNAME", "_json_key")
   image_registry_password = get_env("COLLIBRA_DQ_IMAGE_REGISTRY_PASSWORD", "")
+  
+  # SSL keystore configuration
+  ssl_keystore_path = get_env("COLLIBRA_DQ_SSL_KEYSTORE_PATH", "")
+  
+  # GCS credentials (optional - only if using GCS for Spark history logs)
+  gcs_secret_path = get_env("COLLIBRA_DQ_GCS_SECRET_PATH", "")
   
   # Helm chart configuration
   chart_repo    = get_env("COLLIBRA_DQ_CHART_REPO", "")
@@ -144,11 +151,19 @@ inputs = {
   postgresql_username = dependency.rds.outputs.db_instance_username
   postgresql_password = dependency.rds.outputs.db_instance_password
 
-  # Image registry credentials (required for private registry)
+  # Image registry credentials
+  # For gcr.io: use _json_key as username and repo-key.json content as password
+  # For private registry: use your registry credentials
   image_registry_url      = local.image_registry_url
   image_registry_username = local.image_registry_username
   image_registry_password = local.image_registry_password
   existing_image_pull_secret = ""
+  
+  # SSL keystore (required)
+  ssl_keystore_path = local.ssl_keystore_path
+  
+  # GCS credentials (optional - only if using GCS for Spark history logs)
+  gcs_secret_path = local.gcs_secret_path
 
   # Service type - LoadBalancer for external access (prod)
   # Note: For production, consider using Ingress with proper TLS termination

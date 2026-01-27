@@ -77,16 +77,16 @@ variable "postgresql_password" {
 
 variable "image_registry_url" {
   type        = string
-  description = "Private container registry URL for Collibra DQ images"
-  # Note: Update this with the actual Collibra private registry URL
-  # This is typically provided by Collibra support
-  default     = ""
+  description = "Container registry URL for Collibra DQ images (gcr.io for Collibra registry, or your private registry URL)"
+  # Note: Collibra images are in Google Artifact Registry (gcr.io)
+  # For private registry, use your registry URL after pulling and pushing images
+  default     = "gcr.io"
 }
 
 variable "image_registry_username" {
   type        = string
-  description = "Username for private container registry (required if existing_image_pull_secret is empty)"
-  default     = ""
+  description = "Username for container registry (use '_json_key' for gcr.io, or your registry username for private registry)"
+  default     = "_json_key"
   sensitive   = true
 
   validation {
@@ -109,7 +109,7 @@ variable "image_registry_password" {
 
 variable "existing_image_pull_secret" {
   type        = string
-  description = "Optional: name of an existing imagePullSecret to use (if set, TF won't create one)"
+  description = "Optional: name of an existing imagePullSecret to use (if set, TF won't create one). Default Helm chart expects 'dq-pull-secret'"
   default     = ""
 }
 
@@ -214,6 +214,48 @@ variable "resource_limits" {
       memory = "2Gi"
     }
   }
+}
+
+variable "ssl_keystore_path" {
+  type        = string
+  description = "Path to SSL keystore file (keystore.jks) - will be created as Kubernetes secret"
+  default     = ""
+}
+
+variable "ssl_keystore_secret_name" {
+  type        = string
+  description = "Name for the SSL keystore Kubernetes secret. Default Helm chart expects 'dq-ssl-secret'"
+  default     = "dq-ssl-secret"
+}
+
+variable "gcs_secret_path" {
+  type        = string
+  description = "Path to GCS service account JSON key file (if using GCS for Spark history logs). Creates secret named 'spark-gcs-secret'"
+  default     = ""
+}
+
+variable "gcs_secret_name" {
+  type        = string
+  description = "Name for the GCS credential Kubernetes secret. Default Helm chart expects 'spark-gcs-secret'"
+  default     = "spark-gcs-secret"
+}
+
+variable "spark_service_account_name" {
+  type        = string
+  description = "Name for the Spark service account (if not using default). Default: Collibra DQ creates service account with Edit role"
+  default     = ""
+}
+
+variable "dq_version" {
+  type        = string
+  description = "Collibra DQ version tag (e.g., '2025.11-ABDGCSHILM-4255' or '2025.11-4254'). See Collibra DQ Builds documentation for available versions. If empty, uses Helm chart default."
+  default     = ""
+}
+
+variable "spark_version" {
+  type        = string
+  description = "Spark version tag (e.g., '3.5.6-2025.11-ABDGCSHILM-4255' or '3.5.6-2025.11-4254'). Must match DQ version. If empty, uses Helm chart default."
+  default     = ""
 }
 
 variable "additional_values" {

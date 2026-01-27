@@ -31,6 +31,18 @@ variable "ingress_with_cidr_blocks" {
   default = []
 }
 
+variable "ingress_with_source_security_group_id" {
+  description = "List of ingress rules with source security group ID"
+  type = list(object({
+    from_port                = number
+    to_port                  = number
+    protocol                 = string
+    description              = string
+    source_security_group_id = string
+  }))
+  default = []
+}
+
 variable "egress_rules" {
   description = "List of egress rules"
   type        = list(string)

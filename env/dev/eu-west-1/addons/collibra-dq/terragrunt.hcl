@@ -30,14 +30,31 @@ locals {
   license_key = get_env("COLLIBRA_DQ_LICENSE_KEY", "")
   
   # Image registry credentials from environment variables
-  image_registry_url      = get_env("COLLIBRA_DQ_IMAGE_REGISTRY_URL", "")
-  image_registry_username = get_env("COLLIBRA_DQ_IMAGE_REGISTRY_USERNAME", "")
+  # Default to gcr.io (Google Artifact Registry) - use _json_key username with repo-key.json content as password
+  image_registry_url      = get_env("COLLIBRA_DQ_IMAGE_REGISTRY_URL", "gcr.io")
+  image_registry_username = get_env("COLLIBRA_DQ_IMAGE_REGISTRY_USERNAME", "_json_key")
   image_registry_password = get_env("COLLIBRA_DQ_IMAGE_REGISTRY_PASSWORD", "")
+  
+  # SSL keystore configuration
+  ssl_keystore_path = get_env("COLLIBRA_DQ_SSL_KEYSTORE_PATH", "")
+  
+  # GCS credentials (optional - only if using GCS for Spark history logs)
+  gcs_secret_path = get_env("COLLIBRA_DQ_GCS_SECRET_PATH", "")
   
   # Helm chart configuration
   chart_repo    = get_env("COLLIBRA_DQ_CHART_REPO", "")
   chart_version = get_env("COLLIBRA_DQ_CHART_VERSION", "")
   chart_name    = get_env("COLLIBRA_DQ_CHART_NAME", "collibra-dq")
+  
+  # Image version configuration
+  # Hardcoded to latest stable versions (2025.11)
+  # DQ version with optional drivers: Athena, BigQuery, Databricks, GCS, Hive, Impala, Livy, MongoDB
+  # Format: "2025.11-ABDGCSHILM-4255" (with optional drivers) or "2025.11-4254" (default secure build)
+  # Spark version must match DQ version: "3.5.6-2025.11-ABDGCSHILM-4255" or "3.5.6-2025.11-4254"
+  # See Collibra DQ Builds documentation for available versions
+  # Using version with optional drivers for maximum functionality
+  dq_version    = "2025.11-ABDGCSHILM-4255"
+  spark_version = "3.5.6-2025.11-ABDGCSHILM-4255"
 }
 
 remote_state {
@@ -84,7 +101,7 @@ dependency "rds" {
   mock_outputs = {
     db_instance_address = "mock-rds-endpoint.rds.amazonaws.com"
     db_instance_port    = 5432
-    db_instance_name    = "collibra_dq"
+    db_instance_name    = "dqMetastore"
     db_instance_username = "collibra_dq_admin"
     db_instance_password = "mock-password"
   }
@@ -134,6 +151,14 @@ inputs = {
   chart_version = local.chart_version
   chart_name    = local.chart_name
 
+  # Image versions (optional - uses Helm chart defaults if not specified)
+  # Format examples:
+  # - dq_version: "2025.11-ABDGCSHILM-4255" (with optional drivers) or "2025.11-4254" (default)
+  # - spark_version: "3.5.6-2025.11-ABDGCSHILM-4255" or "3.5.6-2025.11-4254"
+  # See Collibra DQ Builds documentation for available versions
+  dq_version    = local.dq_version
+  spark_version = local.spark_version
+
   # License key (required)
   license_key = local.license_key
 
@@ -144,11 +169,19 @@ inputs = {
   postgresql_username = dependency.rds.outputs.db_instance_username
   postgresql_password = dependency.rds.outputs.db_instance_password
 
-  # Image registry credentials (required for private registry)
+  # Image registry credentials
+  # For gcr.io: use _json_key as username and repo-key.json content as password
+  # For private registry: use your registry credentials
   image_registry_url      = local.image_registry_url
   image_registry_username = local.image_registry_username
   image_registry_password = local.image_registry_password
   existing_image_pull_secret = ""
+  
+  # SSL keystore (required)
+  ssl_keystore_path = local.ssl_keystore_path
+  
+  # GCS credentials (optional - only if using GCS for Spark history logs)
+  gcs_secret_path = local.gcs_secret_path
 
   # Service type - LoadBalancer for external access (dev)
   service_type = "LoadBalancer"

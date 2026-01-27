@@ -59,7 +59,8 @@ generate "backend" {
 dependency "vpc" {
   config_path = "../../../network/vpc"
   mock_outputs = {
-    vpc_id = "vpc-123456"
+    vpc_id         = "vpc-123456"
+    vpc_cidr_block = "10.10.0.0/16"
   }
   mock_outputs_allowed_terraform_commands = ["init", "plan"]
 }
@@ -67,7 +68,16 @@ dependency "vpc" {
 dependency "eks" {
   config_path = "../../../eks"
   mock_outputs = {
-    node_security_group_id = "sg-123456"
+    node_security_group_id = "sg-mock-123456"
+    cluster_name           = "mock-cluster"
+  }
+  mock_outputs_allowed_terraform_commands = ["init", "plan"]
+}
+
+dependency "sg_ops" {
+  config_path = "../../../ops/sg-ops"
+  mock_outputs = {
+    security_group_id = "sg-mock-ops"
   }
   mock_outputs_allowed_terraform_commands = ["init", "plan"]
 }
@@ -75,7 +85,8 @@ dependency "eks" {
 dependencies {
   paths = [
     "../../../network/vpc",
-    "../../../eks"
+    "../../../eks",
+    "../../../ops/sg-ops"
   ]
 }
 
@@ -85,15 +96,22 @@ terraform {
 
 inputs = {
   name        = "${local.org}-${local.env}-rds-collibra-dq-sg"
-  description = "Security group for Collibra DQ RDS PostgreSQL - allows access from EKS nodes"
+  description = "Security group for Collibra DQ RDS PostgreSQL - allows access from EKS nodes and ops instance"
   # Get VPC ID from dependency output (not hardcoded)
   vpc_id = dependency.vpc.outputs.vpc_id
 
-  # Allow access from EKS node security group
-  # Get node security group ID from EKS module output (not hardcoded)
-  allowed_security_group_ids = [dependency.eks.outputs.node_security_group_id]
+  # Allow access from EKS node security group and ops security group
+  # Get security group IDs from dependency outputs (not hardcoded)
+  # This allows access from:
+  # - EKS nodes (for Collibra DQ pods)
+  # - Ops instance (for database management and troubleshooting)
+  allowed_security_group_ids = [
+    dependency.eks.outputs.node_security_group_id,
+    dependency.sg_ops.outputs.security_group_id
+  ]
   
-  # Optionally allow access from VPC CIDR (for ops instance access)
+  # Alternative: Use VPC CIDR block if you need broader access from within the VPC
+  # This is less secure but simpler - uncomment if preferred
   # allowed_cidr_blocks = [dependency.vpc.outputs.vpc_cidr_block]
 
   port = 5432

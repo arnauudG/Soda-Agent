@@ -45,7 +45,7 @@ resource "kubernetes_namespace" "this" {
 # ---------- Image pull secret handling ----------
 locals {
   using_existing_pullsec = trimspace(var.existing_image_pull_secret) != ""
-  registry_url           = var.image_registry_url != "" ? var.image_registry_url : "registry.collibra.com" # Default registry URL
+  registry_url           = var.image_registry_url != "" ? var.image_registry_url : "gcr.io" # Default to Google Artifact Registry
 
   dockerconfigjson = jsonencode({
     auths = {
@@ -61,11 +61,12 @@ locals {
 }
 
 # Create the imagePullSecret only when NOT reusing an existing one
+# Note: Collibra DQ Helm chart expects the secret name to be 'dq-pull-secret'
 resource "kubernetes_secret" "image_pull" {
   count = local.using_existing_pullsec ? 0 : 1
 
   metadata {
-    name      = "${var.release_name}-pullsecret"
+    name      = "dq-pull-secret"
     namespace = var.namespace
   }
 
@@ -133,6 +134,46 @@ resource "kubernetes_secret" "license" {
   depends_on = [kubernetes_namespace.this]
 }
 
+# ---------- SSL Keystore secret ----------
+resource "kubernetes_secret" "ssl_keystore" {
+  count = var.ssl_keystore_path != "" ? 1 : 0
+
+  metadata {
+    name      = var.ssl_keystore_secret_name
+    namespace = var.namespace
+  }
+
+  type = "Opaque"
+
+  binary_data = {
+    keystore.jks = filebase64(var.ssl_keystore_path)
+  }
+
+  depends_on = [kubernetes_namespace.this]
+}
+
+# ---------- GCS credential secret (for Spark history logs) ----------
+resource "kubernetes_secret" "gcs" {
+  count = var.gcs_secret_path != "" ? 1 : 0
+
+  metadata {
+    name      = var.gcs_secret_name
+    namespace = var.namespace
+  }
+
+  type = "Opaque"
+
+  data = {
+    # GCS service account JSON key file
+    # Note: Kubernetes automatically base64-encodes values in 'data' field
+    # Collibra DQ expects the key file content in the secret
+    # The exact key name may vary - adjust if Helm chart expects different key name
+    key.json = file(var.gcs_secret_path)
+  }
+
+  depends_on = [kubernetes_namespace.this]
+}
+
 # ---------- Helm release ----------
 resource "helm_release" "collibra_dq" {
   name             = var.release_name
@@ -150,6 +191,26 @@ resource "helm_release" "collibra_dq" {
   set {
     name  = "licenseKey"
     value = var.license_key
+  }
+
+  # DQ and Spark versions (if specified)
+  # Format: dq_version = "2025.11-ABDGCSHILM-4255" or "2025.11-4254"
+  # Format: spark_version = "3.5.6-2025.11-ABDGCSHILM-4255" or "3.5.6-2025.11-4254"
+  # See Collibra DQ Builds documentation for available versions
+  dynamic "set" {
+    for_each = var.dq_version != "" ? [1] : []
+    content {
+      name  = "global.version.dq"
+      value = var.dq_version
+    }
+  }
+
+  dynamic "set" {
+    for_each = var.spark_version != "" ? [1] : []
+    content {
+      name  = "global.version.spark"
+      value = var.spark_version
+    }
   }
 
   # PostgreSQL connection
@@ -286,6 +347,23 @@ resource "helm_release" "collibra_dq" {
     }
   }
 
+  # SSL Keystore secret (if provided)
+  dynamic "set" {
+    for_each = var.ssl_keystore_path != "" ? [1] : []
+    content {
+      name  = "sslKeystore.secretName"
+      value = var.ssl_keystore_secret_name
+    }
+  }
+
+  dynamic "set" {
+    for_each = var.ssl_keystore_path != "" ? [1] : []
+    content {
+      name  = "sslKeystore.fileName"
+      value = "keystore.jks"
+    }
+  }
+
   # Additional values from var.additional_values
   dynamic "set" {
     for_each = var.additional_values
@@ -295,11 +373,31 @@ resource "helm_release" "collibra_dq" {
     }
   }
 
+  # GCS secret configuration (if provided)
+  dynamic "set" {
+    for_each = var.gcs_secret_path != "" ? [1] : []
+    content {
+      name  = "sparkHistoryServer.gcs.secretName"
+      value = var.gcs_secret_name
+    }
+  }
+
+  # Spark service account (if specified)
+  dynamic "set" {
+    for_each = var.spark_service_account_name != "" ? [1] : []
+    content {
+      name  = "spark.serviceAccount.name"
+      value = var.spark_service_account_name
+    }
+  }
+
   # Ensure namespace and secrets are created first when TF manages them
   depends_on = [
     kubernetes_namespace.this,
     kubernetes_secret.image_pull,
     kubernetes_secret.postgresql,
-    kubernetes_secret.license
+    kubernetes_secret.license,
+    kubernetes_secret.ssl_keystore,
+    kubernetes_secret.gcs
   ]
 }

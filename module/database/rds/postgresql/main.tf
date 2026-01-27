@@ -23,11 +23,14 @@ resource "random_password" "master_password" {
 locals {
   master_password = var.master_password != "" ? var.master_password : random_password.master_password[0].result
   final_snapshot_name = var.final_snapshot_identifier != "" ? var.final_snapshot_identifier : "${var.name}-final-snapshot-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
+  # Convert name to lowercase for AWS resources that require it (subnet groups, parameter groups)
+  # DB instance identifier can have uppercase, but subnet/parameter groups cannot
+  name_lower = lower(var.name)
 }
 
 # DB Subnet Group
 resource "aws_db_subnet_group" "this" {
-  name       = "${var.name}-subnet-group"
+  name       = "${local.name_lower}-subnet-group"
   subnet_ids = var.subnet_ids
 
   tags = merge(
@@ -40,7 +43,7 @@ resource "aws_db_subnet_group" "this" {
 
 # DB Parameter Group (optional - uses defaults if not specified)
 resource "aws_db_parameter_group" "this" {
-  name   = "${var.name}-parameter-group"
+  name   = "${local.name_lower}-parameter-group"
   family = "postgres15"
 
   tags = merge(
@@ -53,7 +56,7 @@ resource "aws_db_parameter_group" "this" {
 
 # DB Instance
 resource "aws_db_instance" "this" {
-  identifier = var.name
+  identifier = local.name_lower
 
   engine         = "postgres"
   engine_version = var.engine_version
@@ -106,7 +109,7 @@ resource "aws_db_instance" "this" {
 # IAM Role for Enhanced Monitoring (if enabled)
 resource "aws_iam_role" "rds_enhanced_monitoring" {
   count = var.monitoring_interval > 0 ? 1 : 0
-  name  = "${var.name}-rds-monitoring-role"
+  name  = "${local.name_lower}-rds-monitoring-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
