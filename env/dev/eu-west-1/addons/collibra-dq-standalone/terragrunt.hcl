@@ -39,7 +39,7 @@ locals {
   # No need to set COLLIBRA_DQ_METASTORE_USER or COLLIBRA_DQ_METASTORE_PASS - uses RDS credentials automatically
   spark_package             = get_env("COLLIBRA_DQ_SPARK_PACKAGE", "spark-3.5.6-bin-hadoop3.tgz")
   dq_admin_user_password    = get_env("COLLIBRA_DQ_ADMIN_PASSWORD", "")
-  dq_package_filename       = get_env("COLLIBRA_DQ_PACKAGE_FILENAME", "dq-2025.11-SPARK356-JDK17-package-full.tar.gz")
+  dq_package_filename       = get_env("COLLIBRA_DQ_PACKAGE_FILENAME", "dq-2025.11-SPARK356-JDK17-package-full.tar")
   license_key               = get_env("COLLIBRA_DQ_LICENSE_KEY", "")
   # Default license name for new installs (can be overridden via environment variable)
   license_name              = get_env("COLLIBRA_DQ_LICENSE_NAME", "collibra-partners")

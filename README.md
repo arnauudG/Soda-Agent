@@ -12,12 +12,16 @@ The infrastructure consists of:
 - **Soda Agent** deployed via Helm on EKS
 - **Collibra DQ Standalone** (optional) - EC2-based deployment with RDS PostgreSQL and ALB
 
+For detailed infrastructure documentation, see [docs/INFRASTRUCTURE.md](docs/INFRASTRUCTURE.md).
+
 ## **Directory Structure**
 
 ```
 Soda-Agent/
-├── module/                          # Shared Terraform modules
-│   ├── helm-soda-agent/            # Soda Agent Helm deployment
+├── docs/                           # Documentation
+│   └── INFRASTRUCTURE.md          # Infrastructure overview and patterns
+├── module/                         # Shared Terraform modules
+│   ├── helm-soda-agent/           # Soda Agent Helm deployment
 │   └── ops-ec2-eks-access/        # EKS access configuration
 ├── env/                            # Environment-specific configurations
 │   ├── dev/
@@ -36,15 +40,21 @@ Soda-Agent/
 │   │       │   └── ops-ec2-eks-access/  # Phase 6: EKS Access
 │   │       └── addons/
 │   │           ├── soda-agent/     # Phase 7: Soda Agent
-│   │           └── collibra-dq-standalone/  # Collibra DQ Standalone (separate deployment)
+│   │           └── collibra-dq-standalone/  # Collibra DQ Standalone
+│   │               └── README.md   # Addon-specific documentation
 │   └── prod/
 │       └── eu-west-1/              # Same structure as dev
-├── deploy.sh                       # Automated deployment script (Soda Agent)
-├── deploy-collibra-dq.sh          # Collibra DQ standalone deployment script
-├── destroy.sh                      # Automated destruction script (Soda Agent)
-├── destroy-collibra-dq.sh          # Collibra DQ standalone destruction script
-├── bootstrap.sh                    # One-time bootstrap script
-├── destroy-bootstrap.sh            # Bootstrap destruction script
+├── scripts/                        # Deployment and utility scripts
+│   ├── deploy/                    # Deployment scripts
+│   │   └── deploy-collibra-dq.sh # Collibra DQ standalone deployment
+│   ├── destroy/                   # Destruction scripts
+│   ├── utils/                     # Utility scripts
+│   │   └── check-deployment-status.sh
+│   └── README.md                  # Scripts documentation
+├── bootstrap.sh                    # One-time bootstrap script (root entry point)
+├── deploy-stack.sh                 # Unified stack deployment (soda-agent | collibra-dq)
+├── destroy-stack.sh                 # Unified stack destruction (soda-agent | collibra-dq)
+├── destroy-bootstrap.sh            # Bootstrap destruction (root entry point)
 ├── .pre-commit-config.yaml         # Pre-commit hooks configuration
 ├── .gitignore                      # Git ignore rules
 └── README.md                       # This file
@@ -134,8 +144,8 @@ The bootstrap process creates:
 - Multiple warnings about data loss
 
 **Order of Operations:**
-1. Destroy all infrastructure: `./destroy.sh <env>`
-2. Destroy bootstrap: `./destroy-bootstrap.sh <env>`
+1. Destroy all stacks: `./destroy-stack.sh <stack> <env>` (for each stack)
+2. Destroy bootstrap: `./destroy-stack.sh <stack> <env> --destroy-bootstrap` (after both stacks destroyed)
 
 ## **Deployment Order**
 
@@ -188,56 +198,48 @@ cd ../../addons/soda-agent
 terragrunt apply --auto-approve
 ```
 
-## **Orchestrated Deployment**
+## **Unified Stack Deployment**
 
-For convenience, you can deploy everything in one command (after bootstrap):
+Use the unified deployment scripts to deploy entire stacks:
 
 ```bash
-# Deploy all 7 phases automatically
-./deploy.sh <env>
+# Deploy Soda Agent stack
+./deploy-stack.sh soda-agent <env>
 
-# Deploy specific phase only
-./deploy.sh <env> <phase>
+# Deploy Collibra DQ Standalone stack
+./deploy-stack.sh collibra-dq <env>
 
 # Examples:
-./deploy.sh prod        # Deploy all phases
-./deploy.sh prod 3      # Deploy phase 3 only (Security Groups)
-./deploy.sh dev 7       # Deploy phase 7 only (Soda Agent)
+./deploy-stack.sh soda-agent prod        # Deploy Soda Agent stack
+./deploy-stack.sh collibra-dq dev        # Deploy Collibra DQ stack
 ```
 
-**Note**: The deployment script respects dependencies and deploys in the correct order.
+**Note**: Bootstrap is automatically created if missing. Shared resources (VPC, endpoints) are reused if already deployed.
 
-## **Destruction Order**
+## **Unified Stack Destruction**
 
-To destroy infrastructure, use the reverse order or the orchestrated command:
+Use the unified destruction scripts to destroy entire stacks:
 
 ```bash
-# Destroy everything automatically (reverse order)
-./destroy.sh <env>
+# Destroy Soda Agent stack (keeps shared resources)
+./destroy-stack.sh soda-agent <env>
 
-# Destroy specific phase only
-./destroy.sh <env> <phase>
+# Destroy Collibra DQ Standalone stack (keeps shared resources)
+./destroy-stack.sh collibra-dq <env>
 
-# Or destroy manually in reverse order (7 → 1)
-cd addons/soda-agent && terragrunt destroy --auto-approve          # Phase 7
-cd ../../eks/ops-ec2-eks-access && terragrunt destroy --auto-approve  # Phase 6
-cd ../../ops/ec2-ops && terragrunt destroy --auto-approve            # Phase 5
-cd ../../eks && terragrunt destroy --auto-approve                    # Phase 4
-cd ../ops/sg-ops && terragrunt destroy --auto-approve                # Phase 3
-cd ../../network/vpc-endpoints && terragrunt destroy --auto-approve  # Phase 2
-cd ../vpc && terragrunt destroy --auto-approve                       # Phase 1
+# Examples:
+./destroy-stack.sh soda-agent prod        # Destroy Soda Agent stack
+./destroy-stack.sh collibra-dq dev        # Destroy Collibra DQ stack
 ```
 
-### **Bootstrap Destruction (After All Infrastructure)**
-
-**CRITICAL**: Only destroy bootstrap AFTER all infrastructure phases have been destroyed.
+**Bootstrap Handling**:
+- Bootstrap is **preserved by default** (shared between stacks)
+- Only destroyed with `--destroy-bootstrap` flag (use with caution!)
+- Script checks if other stack exists before destroying shared resources (VPC, endpoints)
 
 ```bash
-# Step 1: Destroy all infrastructure phases
-./destroy.sh <env>
-
-# Step 2: Destroy bootstrap (deletes state bucket and lock table)
-./destroy-bootstrap.sh <env>
+# Destroy bootstrap (only if both stacks are destroyed)
+./destroy-stack.sh soda-agent dev --destroy-bootstrap
 ```
 
 **What Gets Destroyed:**
@@ -247,135 +249,57 @@ cd ../vpc && terragrunt destroy --auto-approve                       # Phase 1
 
 **Warning**: This action is **irreversible** and will delete all state. Ensure you have backups if needed.
 
-## **Collibra DQ Standalone Deployment**
+## **Unified Stack Deployment**
 
-Collibra DQ can be deployed as a standalone EC2 instance (separate from the main Soda Agent infrastructure).
+Deploy either stack using the unified deployment scripts:
 
-### **Prerequisites**
-
-- Network (VPC) and RDS database must be deployed first
-- Collibra DQ package file placed in `packages/collibra-dq/` directory
-- Required environment variables set (see below)
-
-### **Quick Start**
+### **Deploy a Stack**
 
 ```bash
-# Deploy all Collibra DQ components
-./deploy-collibra-dq.sh dev
+# Deploy Soda Agent stack
+./deploy-stack.sh soda-agent dev
 
-# Or for production
-./deploy-collibra-dq.sh prod
+# Deploy Collibra DQ Standalone stack
+./deploy-stack.sh collibra-dq dev
 
-# Deploy specific component
-./deploy-collibra-dq.sh dev package    # Upload package to S3
-./deploy-collibra-dq.sh dev instance    # Deploy EC2 instance
+# For production
+./deploy-stack.sh soda-agent prod
+./deploy-stack.sh collibra-dq prod
 ```
 
-### **Deployment Order**
-
-The script automatically deploys in the correct order:
-
-1. Network (VPC + endpoints) - if not already deployed
-2. RDS Security Group
-3. RDS Database
-4. Collibra DQ Security Group
-5. Package Upload (uploads package from `packages/collibra-dq/` to S3)
-6. EC2 Instance (downloads package from S3 and installs Collibra DQ)
-7. ALB Security Group
-8. Application Load Balancer
-9. Target Group Attachment
-
-### **Environment Variables for Collibra DQ**
-
-**Required:**
-```bash
-export COLLIBRA_DQ_ADMIN_PASSWORD="your-secure-password"
-```
-
-**Optional:**
-```bash
-export COLLIBRA_DQ_LICENSE_KEY="your-license-key"
-export COLLIBRA_DQ_LICENSE_NAME="collibra-partners"  # Default
-export COLLIBRA_DQ_PACKAGE_FILENAME="dq-2025.11-SPARK356-JDK17-package-full.tar.gz"
-export COLLIBRA_DQ_PACKAGE_URL=""  # Leave empty to use S3 (auto-uploaded)
-export COLLIBRA_DQ_ACM_CERTIFICATE_ARN=""  # For HTTPS (prod recommended)
-export COLLIBRA_DQ_DOMAIN_NAME=""  # For HTTPS
-```
-
-### **Package Management**
-
-Place your Collibra DQ package file in:
-```
-packages/collibra-dq/dq-2025.11-SPARK356-JDK17-package-full.tar.gz
-# Or
-packages/collibra-dq/dq-2025.11-SPARK356-JDK17-package-full.tar
-```
-
-The deployment script will automatically:
-- Detect the package file
-- Upload it to S3
-- Make it available for the EC2 instance to download
-
-### **Production vs Development**
-
-**Dev Environment:**
-- Instance: `m5.large` (2 vCPU, 8GB RAM)
-- Volume: 100 GB
-- ALB deletion protection: Disabled
-- ALB logging: Disabled
-
-**Prod Environment:**
-- Instance: `m5.xlarge` (4 vCPU, 16GB RAM)
-- Volume: 200 GB
-- ALB deletion protection: Enabled
-- ALB logging: Enabled
-- HTTPS recommended (set `COLLIBRA_DQ_ACM_CERTIFICATE_ARN`)
-
-### **Destroy Collibra DQ**
+### **Destroy a Stack**
 
 ```bash
-# Destroy all Collibra DQ components
-./destroy-collibra-dq.sh dev
+# Destroy Soda Agent stack (keeps shared resources)
+./destroy-stack.sh soda-agent dev
 
-# Destroy specific component
-./destroy-collibra-dq.sh dev instance
-./destroy-collibra-dq.sh dev database
+# Destroy Collibra DQ Standalone stack (keeps shared resources)
+./destroy-stack.sh collibra-dq dev
+
+# Destroy bootstrap (only if both stacks are destroyed)
+./destroy-stack.sh soda-agent dev --destroy-bootstrap
 ```
 
-**Warning**: Destroying the database will delete all Collibra DQ data!
+### **Bootstrap Handling**
 
-### **Accessing Collibra DQ**
+- **Bootstrap is shared** between both stacks
+- Automatically created if missing during deployment
+- **Not destroyed** by default (preserves state for other stack)
+- Only destroyed with `--destroy-bootstrap` flag (use with caution!)
 
-After deployment:
+### **Stack Details**
 
-1. Get ALB DNS name:
-   ```bash
-   cd env/dev/eu-west-1/addons/collibra-dq-standalone/alb
-   terragrunt output alb_dns_name
-   ```
+**Soda Agent Stack**:
+- EKS Cluster with managed node groups
+- Soda Agent deployed via Helm
+- See [Soda Agent Deployment](#soda-agent-deployment) section for details
 
-2. Access web interface:
-   ```
-   http://<alb-dns-name>
-   ```
+**Collibra DQ Standalone Stack**:
+- EC2-based standalone deployment
+- RDS PostgreSQL metastore
+- Application Load Balancer for web access
+- See [env/dev/eu-west-1/addons/collibra-dq-standalone/README.md](env/dev/eu-west-1/addons/collibra-dq-standalone/README.md) for detailed documentation
 
-3. Login:
-   - Username: `admin`
-   - Password: Value set in `COLLIBRA_DQ_ADMIN_PASSWORD`
-
-### **Monitoring**
-
-Check deployment status:
-```bash
-./check-deployment-status.sh dev
-```
-
-Connect to instance:
-```bash
-cd env/dev/eu-west-1/addons/collibra-dq-standalone
-INSTANCE_ID=$(terragrunt output -raw instance_id)
-aws ssm start-session --target $INSTANCE_ID --region eu-west-1
-```
 
 View installation logs:
 ```bash
@@ -678,17 +602,27 @@ bootstrap (one-time)
 ./destroy-bootstrap.sh <env>   # Destroy bootstrap (after all infrastructure)
 ```
 
-### **Deploy**
+### **Deploy Stacks**
 ```bash
-./deploy.sh <env>              # Deploy all 7 phases
-./deploy.sh <env> <phase>      # Deploy specific phase (1-7)
+./deploy-stack.sh <stack> <env>     # Deploy entire stack
+# Examples:
+./deploy-stack.sh soda-agent dev    # Deploy Soda Agent stack
+./deploy-stack.sh collibra-dq prod  # Deploy Collibra DQ stack
 ```
 
-### **Destroy**
+### **Destroy Stacks**
 ```bash
-./destroy.sh <env>             # Destroy all 7 phases (reverse order)
-./destroy.sh <env> <phase>     # Destroy specific phase (1-7)
-./destroy-bootstrap.sh <env>   # Destroy bootstrap resources (S3 + DynamoDB)
+./destroy-stack.sh <stack> <env>                    # Destroy stack (keeps shared resources)
+./destroy-stack.sh <stack> <env> --destroy-bootstrap  # Also destroy bootstrap
+# Examples:
+./destroy-stack.sh soda-agent dev                    # Destroy Soda Agent stack
+./destroy-stack.sh collibra-dq prod                  # Destroy Collibra DQ stack
+```
+
+### **Bootstrap**
+```bash
+./bootstrap.sh <env>           # Bootstrap new environment (one-time)
+./destroy-bootstrap.sh <env>   # Destroy bootstrap (after all stacks destroyed)
 ```
 
 ### **Validate Configuration**
@@ -722,24 +656,19 @@ terragrunt force-unlock <lock-id>
 
 ### **Most Common Commands**
 ```bash
-# Bootstrap new environment (one-time)
+# Bootstrap new environment (one-time, automatic if missing)
 ./bootstrap.sh prod
 
-# Deploy all 7 phases
-./deploy.sh prod
+# Deploy entire stacks
+./deploy-stack.sh soda-agent prod      # Deploy Soda Agent stack
+./deploy-stack.sh collibra-dq dev       # Deploy Collibra DQ stack
 
-# Deploy specific phase (1-7)
-./deploy.sh prod 3    # Deploy Security Groups only
-./deploy.sh prod 7    # Deploy Soda Agent only
+# Destroy entire stacks
+./destroy-stack.sh soda-agent prod      # Destroy Soda Agent stack
+./destroy-stack.sh collibra-dq dev      # Destroy Collibra DQ stack
 
-# Destroy all 7 phases (reverse order)
-./destroy.sh prod
-
-# Destroy specific phase (1-7)
-./destroy.sh prod 7   # Destroy Soda Agent only
-
-# Destroy bootstrap (AFTER all infrastructure is destroyed)
-./destroy-bootstrap.sh prod
+# Destroy bootstrap (only after both stacks destroyed)
+./destroy-stack.sh soda-agent prod --destroy-bootstrap
 
 # Check for corrupted files
 find env/ -name "terragrunt.hcl" -exec grep -l "ERROR\|WARN" {} \;
@@ -1130,463 +1059,62 @@ soda:
 - ✅ Network access: All required FQDNs are accessible (verified via connectivity tests)
 - ✅ Security groups: EKS nodes allow all outbound traffic (0.0.0.0/0)
 
-## **Collibra DQ Deployment**
+## **Unified Stack Deployment**
 
-### **Overview**
+This repository supports two deployment stacks:
 
-Collibra Data Quality & Observability Classic (DQ) is deployed as a Helm chart on the EKS cluster. This addon follows the same architecture pattern as the Soda Agent deployment.
+1. **Soda Agent Stack**: EKS-based deployment with Soda Agent
+2. **Collibra DQ Standalone Stack**: EC2-based deployment with Collibra DQ
 
-Collibra DQ embraces cloud-native principles and is decomposed into several microservices, each deployed as a containerized component:
+Both stacks share common infrastructure (VPC, VPC Endpoints, Bootstrap) but can be deployed independently.
 
-| Component | Microservice | Description |
-|-----------|--------------|-------------|
-| **DQ Web** | `dq-web` | Main point of entry and interaction between Collibra DQ and end users or integrated applications. Provides both interactive UI and robust APIs for automated integration. |
-| **DQ Agent** | `dq-agent` | The "foreman" of Collibra DQ. Marshals compute resources to perform data quality checks. Translates requests from DQ Web into technical descriptors and launches DQ jobs. Does not perform the actual data quality work. |
-| **DQ Metastore** | PostgreSQL | Stores all metadata, statistics, and results of DQ jobs. Main point of communication between DQ Web and DQ Agent. Also contains results from transient worker containers. **Collibra recommends using an external PostgreSQL metastore** (RDS in our case). |
-| **Apache Spark** | `dq-spark` | Distributed compute framework that powers the Collibra DQ data quality engine. Enables DQ jobs to scale to Terabyte-scale datasets. Spark containers are ephemeral and only exist for the duration of a DQ job. |
-| **Apache Livy** | `dq-livy` | Session Manager that enables Collibra DQ to browse HDFS, S3, GCS, or Azure Data Lake. Interacts with Object Stores (similar to JDBC sources Explorer) for tasks like estimating jobs and getting days with data. |
+### **Deploy a Stack**
 
-**Architecture Notes**:
-- **Containerization**: All components are Docker container images versioned and maintained in Google Container Registry (`gcr.io`)
-- **Kubernetes Support**: Collibra DQ supports EKS, AKS, and GKE (we deploy on EKS)
-- **Helm Chart**: Collibra DQ uses Helm charts to simplify deployment complexity
-- **Cloud Native**: Designed for modern, dynamic environments (public, private, hybrid clouds)
-
-### **Prerequisites**
-
-Before deploying Collibra DQ, ensure you have:
-
-1. **EKS Cluster**: 
-   - Existing EKS cluster with admin access to the control plane
-   - Client tools: `kubectl`, `helm`, and AWS CLI/EKS CLI installed
-   - (Optional) Ingress controller for cloud load balancer with TLS
-   - (Optional) IAM role mapping to Kubernetes service account for password-less PostgreSQL access
-   - (Optional) IAM role mapping to Kubernetes service account for cloud storage access (S3/GCS)
-
-2. **RDS PostgreSQL Database**: 
-   - An RDS PostgreSQL instance is automatically created as part of the deployment
-   - Version: PostgreSQL 15.4 (configurable)
-   - Storage: 100GB minimum (auto-scaling enabled)
-   - Instance class: `db.t3.medium` (dev) or `db.t3.large` (prod)
-   - **Note**: Collibra recommends using an external PostgreSQL metastore rather than the bundled one
-
-3. **Container Registry Access**: 
-   - **Collibra Image Registry**: Images are located in Google Container Registry (`gcr.io`)
-   - **Access**: Contact Collibra Support to obtain `repo-key.json` file for your organization
-   - **Images Required**: 
-     - `gcr.io/owl-hadoop-cdh/dq-agent:<version>`
-     - `gcr.io/owl-hadoop-cdh/dq-web:<version>`
-     - `gcr.io/owl-hadoop-cdh/dq-spark:<version>`
-     - `gcr.io/owl-hadoop-cdh/dq-livy:<version>`
-   - **Pull Secret**: Default name is `dq-pull-secret` (configurable via Helm chart)
-   - **Note**: Collibra strongly recommends pulling images from Collibra registry and pushing them to your private registry for control over image updates
-   - **Warning**: Support for Collibra DQ cloud-native deployment is limited to containers provided from the Collibra container registry
-
-4. **License Key**: Valid Collibra DQ license key
-
-5. **SSL Keystore**: 
-   - SSL keystore file (`keystore.jks`) containing signed certificate, keychain, and private key
-   - **Secret Name**: Default is `dq-ssl-secret` (configurable)
-   - **Note**: SSL is required for secure access to DQ Web (deployment without SSL is not recommended)
-
-6. **Cloud Storage Credentials** (if enabling History Server):
-   - **S3**: IAM Role with access to target bucket attached to Kubernetes nodes
-   - **GCS**: Service account JSON key file - secret named `spark-gcs-secret` (default, configurable)
-   - **Note**: Currently supports S3 and GCS (Azure Blob and HDFS on roadmap)
-
-7. **Spark Service Account**:
-   - Required for DQ Agent and Spark driver to create/destroy compute containers
-   - Default: Collibra DQ attempts to create service account with Edit role
-   - If Edit role unavailable, manually create Role with required permissions (see documentation)
-
-8. **Helm Chart**: Access to Collibra DQ Helm chart repository
-   - **Resource Portal**: Download Helm charts and installation files from [Collibra Product Resource Center](https://productresources.collibra.com/downloads/data-quality-observability-classic-2025-11/)
-   - Contact Collibra support for Helm chart repository URL and access credentials
-   - **Note**: Helm deployment is unique for each customer and Collibra Support may be limited in their ability to assist with some configurations
-   - Helm charts simplify deployment by automatically generating Kubernetes manifests with templated and parameterized configurations
-
-### **System Requirements**
-
-**Supported Kubernetes Versions**: 1.29 through 1.33
-
-**Component Resource Requirements** (minimum):
-- **DQ Web** (`dq-web`): 1 core, 2GB RAM, 10MB PVC
-  - Main entry point for users and API integrations
-- **DQ Agent** (`dq-agent`): 1 core, 1GB RAM, 100MB PVC
-  - Orchestrates DQ jobs and manages compute resources
-- **DQ Metastore** (PostgreSQL): 1 core, 2GB RAM, 10GB PVC (if using bundled PostgreSQL)
-  - **Note**: We use external RDS PostgreSQL (recommended by Collibra)
-- **Apache Spark** (`dq-spark`): 2 cores, 2GB RAM (minimum - scales based on workload)
-  - Ephemeral containers that exist only for the duration of DQ jobs
-  - Scales dynamically based on job requirements
-- **Apache Livy** (`dq-livy`): Resources vary based on usage
-  - Session manager for browsing object stores (S3, GCS, Azure Data Lake)
-
-**Note**: Spark allocates overhead memory on top of requested memory. For example, an executor pod configured with 6GB may actually request 6.8GB. See [Apache Spark Memory Management](https://spark.apache.org/docs/latest/configuration.html#memory-management) for details.
-
-### **Environment Variables Setup**
-
-**Required Variables**:
 ```bash
-# License key (required)
-export COLLIBRA_DQ_LICENSE_KEY="your-license-key"
+# Deploy Soda Agent stack
+./deploy-stack.sh soda-agent dev
 
-# Image registry credentials
-# Option 1: Use Collibra's Google Artifact Registry (gcr.io) - for initial pull only
-# Contact Collibra Support to obtain repo-key.json file
-export COLLIBRA_DQ_IMAGE_REGISTRY_URL="gcr.io"  # Google Artifact Registry
-export COLLIBRA_DQ_IMAGE_REGISTRY_USERNAME="_json_key"
-export COLLIBRA_DQ_IMAGE_REGISTRY_PASSWORD="$(cat /path/to/repo-key.json)"  # Content of repo-key.json file
+# Deploy Collibra DQ Standalone stack
+./deploy-stack.sh collibra-dq dev
 
-# Option 2: Use your private registry (recommended after initial pull)
-# After pulling from Collibra registry, tag and push to your private registry
-export COLLIBRA_DQ_IMAGE_REGISTRY_URL="your-private-registry-url"
-export COLLIBRA_DQ_IMAGE_REGISTRY_USERNAME="your-registry-username"
-export COLLIBRA_DQ_IMAGE_REGISTRY_PASSWORD="your-registry-password"
-
-# SSL Keystore (required)
-# Path to keystore.jks file - will be created as Kubernetes secret 'dq-ssl-secret'
-export COLLIBRA_DQ_SSL_KEYSTORE_PATH="/path/to/keystore.jks"
-
-# GCS Credentials (optional - only if using GCS for Spark history logs)
-export COLLIBRA_DQ_GCS_SECRET_PATH="/path/to/gcs-service-account-key.json"
-
-# Helm chart configuration (required)
-# Get Helm chart repository URL from Collibra Product Resource Center:
-# https://productresources.collibra.com/downloads/data-quality-observability-classic-2025-11/
-export COLLIBRA_DQ_CHART_REPO="https://your-collibra-helm-repo-url"  # Provided by Collibra support
-export COLLIBRA_DQ_CHART_VERSION=""  # Empty for latest, or specify version
-export COLLIBRA_DQ_CHART_NAME="collibra-dq"
+# For production
+./deploy-stack.sh soda-agent prod
+./deploy-stack.sh collibra-dq prod
 ```
 
-**Optional Variables**:
-- `COLLIBRA_DQ_CHART_VERSION`: Specific chart version to deploy (defaults to latest if empty)
-- `COLLIBRA_DQ_RDS_PASSWORD`: RDS master password (if not set, a random password will be generated)
-- `COLLIBRA_DQ_IMAGE_REGISTRY_URL`: Override default `gcr.io` if using private registry
-- `COLLIBRA_DQ_IMAGE_REGISTRY_USERNAME`: Override default `_json_key` if using private registry
-- `COLLIBRA_DQ_GCS_SECRET_PATH`: Path to GCS service account JSON key file (if using GCS for Spark history logs)
+### **Destroy a Stack**
 
-### **Pre-Deployment Steps**
-
-**Before deploying Collibra DQ, complete these steps:**
-
-1. **Obtain Collibra Resources**:
-   - Contact Collibra Support to obtain:
-     - `repo-key.json` file for accessing Google Artifact Registry
-     - SSL keystore file (`keystore.jks`)
-     - Helm chart repository URL
-     - Image version tags
-
-2. **Pull and Push Images** (if using private registry):
-   ```bash
-   # Login to Collibra registry using repo-key.json
-   docker login -u _json_key -p "$(cat /path/to/repo-key.json)" https://gcr.io
-   
-   # Pull images from Collibra registry (get version tags from Collibra Support)
-   docker pull gcr.io/owl-hadoop-cdh/dq-agent:<version>
-   docker pull gcr.io/owl-hadoop-cdh/dq-web:<version>
-   docker pull gcr.io/owl-hadoop-cdh/dq-spark:<version>
-   docker pull gcr.io/owl-hadoop-cdh/dq-livy:<version>
-   
-   # Tag and push to your private registry
-   docker tag gcr.io/owl-hadoop-cdh/dq-web:<version> <your-registry>/dq-web:<version>
-   docker push <your-registry>/dq-web:<version>
-   # Repeat for dq-agent, dq-spark, dq-livy
-   ```
-   
-   **Note**: Collibra strongly recommends using a private registry after initial pull to:
-   - Control when images are updated
-   - Eliminate operational dependencies on Collibra's repository
-   - Improve security and compliance
-
-3. **Prepare SSL Keystore**:
-   - Obtain `keystore.jks` file from Collibra Support
-   - File must contain signed certificate, keychain, and private key
-   - Ensure file is accessible at the path you'll specify in `COLLIBRA_DQ_SSL_KEYSTORE_PATH`
-   - File will be automatically created as Kubernetes secret (`dq-ssl-secret`) during deployment
-   - **Important**: The file must be named `keystore.jks` (or specify correct name in Helm values)
-   - **Note**: SSL is required for secure access to DQ Web (deployment without SSL is not recommended)
-
-4. **Prepare Cloud Storage Credentials** (if enabling History Server):
-   - **For S3**: 
-     - Ensure IAM Role with bucket access is attached to Kubernetes nodes
-     - Role must have permissions to read/write to target S3 bucket
-     - No additional secrets required (uses node IAM role)
-   - **For GCS**: 
-     - Obtain service account JSON key file with access to log bucket
-     - Set `COLLIBRA_DQ_GCS_SECRET_PATH` to the JSON key file path
-     - Secret will be created as `spark-gcs-secret` (default, configurable)
-     - Verify service account has Storage Object Admin or similar permissions on target bucket
-
-5. **Configure kubectl Access**:
-   ```bash
-   # For EKS
-   aws eks --region <region-code> update-kubeconfig --name <cluster_name>
-   
-   # Verify access
-   kubectl get nodes
-   kubectl get namespaces
-   ```
-
-### **Deployment Steps**
-
-**Important**: Collibra DQ requires RDS PostgreSQL to be deployed first. Also ensure you have:
-- Admin access to EKS cluster control plane
-- `kubectl`, `helm`, and AWS CLI configured
-- All required secrets prepared (SSL keystore, image pull secret, optional GCS secret)
-
-Deploy in this order:
-
-1. **Set Environment Variables**:
-   ```bash
-   # Set all required environment variables (see above)
-   export COLLIBRA_DQ_LICENSE_KEY="..."
-   export COLLIBRA_DQ_IMAGE_REGISTRY_USERNAME="..."
-   export COLLIBRA_DQ_IMAGE_REGISTRY_PASSWORD="..."
-   export COLLIBRA_DQ_CHART_REPO="..."
-   # Optional: Set RDS password (otherwise auto-generated)
-   export COLLIBRA_DQ_RDS_PASSWORD="your-secure-password"
-   ```
-
-2. **Deploy RDS Security Group** (Phase 1):
-   ```bash
-   # For dev environment
-   cd env/dev/eu-west-1/database/rds-collibra-dq/sg-rds
-   terragrunt plan
-   terragrunt apply
-   
-   # For prod environment
-   cd env/prod/eu-west-1/database/rds-collibra-dq/sg-rds
-   terragrunt plan
-   terragrunt apply
-   ```
-
-3. **Deploy RDS PostgreSQL** (Phase 2):
-   ```bash
-   # For dev environment
-   cd env/dev/eu-west-1/database/rds-collibra-dq/rds
-   terragrunt plan   # Review changes
-   terragrunt apply  # Deploy RDS (takes ~10-15 minutes)
-   
-   # For prod environment
-   cd env/prod/eu-west-1/database/rds-collibra-dq/rds
-   terragrunt plan
-   terragrunt apply
-   ```
-
-4. **Deploy Collibra DQ** (Phase 3):
-   ```bash
-   # For dev environment
-   cd env/dev/eu-west-1/addons/collibra-dq
-   terragrunt plan   # Review changes
-   terragrunt apply  # Deploy Collibra DQ
-   
-   # For prod environment
-   cd env/prod/eu-west-1/addons/collibra-dq
-   terragrunt plan
-   terragrunt apply
-   ```
-
-5. **Verify Deployment**:
-   ```bash
-   # Check Helm release status
-   helm list -n collibra-dq
-   
-   # Check pod status
-   kubectl get pods -n collibra-dq
-   
-   # Check service (DQ Web)
-   kubectl get svc -n collibra-dq
-   
-   # Verify secrets are created
-   kubectl get secrets -n collibra-dq
-   # Should see: dq-pull-secret, dq-ssl-secret, collibra-dq-postgresql, collibra-dq-license
-   # Optional: spark-gcs-secret (if GCS is configured)
-   
-   # View logs
-   kubectl logs -n collibra-dq -l app.kubernetes.io/name=collibra-dq --tail=50
-   
-   # Check service account and role bindings
-   kubectl get sa -n collibra-dq
-   kubectl get rolebinding -n collibra-dq
-   ```
-
-### **Network Requirements**
-
-**Default Ports Used by Collibra DQ**:
-- **443**: Connectivity to data sources (databases, file storage, etc.)
-- **5432**: DQ Metastore (PostgreSQL) - internal cluster communication
-- **9000**: DQ Web service
-- **9101**: Health Check API for DQ Agent
-
-**Egress Requirements**:
-- Outbound access to data sources (port 443)
-- Outbound access to PostgreSQL database (port 5432)
-- Outbound access to Collibra image registry
-- DNS resolution for external services
-
-**Ingress Requirements**:
-- DQ Web service must be accessible (LoadBalancer or Ingress)
-- Health check endpoint (port 9101) for monitoring
-
-### **Service Configuration**
-
-The deployment supports three service types for DQ Web:
-
-- **LoadBalancer** (default): Creates an AWS Load Balancer for external access
-- **NodePort**: Exposes service on a node port (for testing)
-- **ClusterIP**: Internal-only access (use with Ingress)
-
-**Note**: For production, consider using Ingress with proper TLS termination instead of LoadBalancer.
-
-### **Resource Scaling**
-
-The default configuration uses minimum resource requirements. For production workloads, adjust resources based on:
-
-- **Concurrency**: Number of concurrent DQ jobs
-- **Data Volume**: Size of largest datasets to scan
-- **Performance**: Desired scan performance
-
-**Scaling Guidelines**:
-- Each DQ job consumes approximately 400 threads
-- DQ services typically consume ~428 threads
-- Set `ULIMIT` to 4096 or higher for multiple concurrent jobs
-- Spark executor memory should be sized based on data volume (see Collibra DQ documentation for sizing tables)
-
-### **RDS PostgreSQL Database**
-
-**Architecture**: An RDS PostgreSQL instance is automatically created and configured as the Collibra DQ metastore.
-
-**Database Configuration**:
-
-**Dev Environment**:
-- **Instance Class**: `db.t3.medium` (2 vCPU, 4GB RAM)
-- **Storage**: 100GB initial, auto-scales up to 200GB
-- **Multi-AZ**: Disabled (single AZ for cost savings)
-- **Backup Retention**: 7 days
-- **Deletion Protection**: Disabled
-- **Performance Insights**: Disabled
-
-**Prod Environment**:
-- **Instance Class**: `db.t3.large` (2 vCPU, 8GB RAM)
-- **Storage**: 100GB initial, auto-scales up to 500GB
-- **Multi-AZ**: Enabled (high availability)
-- **Backup Retention**: 30 days
-- **Deletion Protection**: Enabled
-- **Performance Insights**: Enabled (7-day retention)
-
-**Database Details**:
-- **Engine**: PostgreSQL 15.4
-- **Database Name**: `collibra_dq`
-- **Master Username**: `collibra_dq_admin`
-- **Master Password**: Auto-generated (or set via `COLLIBRA_DQ_RDS_PASSWORD` env var)
-- **Network**: Deployed in private subnets, accessible only from EKS nodes
-- **Security**: Encrypted at rest, accessible only via security group rules
-
-**Database Initialization**:
-The Collibra DQ Helm chart will handle database schema creation automatically. The RDS instance is created with the necessary database and user permissions.
-
-**Accessing RDS Password**:
-If a random password was generated, retrieve it from Terraform outputs:
 ```bash
-cd env/dev/eu-west-1/database/rds-collibra-dq/rds
-terragrunt output db_instance_password
+# Destroy Soda Agent stack (keeps shared resources)
+./destroy-stack.sh soda-agent dev
+
+# Destroy Collibra DQ Standalone stack (keeps shared resources)
+./destroy-stack.sh collibra-dq dev
+
+# Destroy bootstrap (only if both stacks are destroyed)
+./destroy-stack.sh soda-agent dev --destroy-bootstrap
 ```
 
-**Note**: The password is automatically passed to Collibra DQ via dependency outputs - no manual configuration needed.
+### **Bootstrap Handling**
 
-### **Troubleshooting**
+- **Bootstrap is shared** between both stacks
+- Automatically created if missing during deployment
+- **Not destroyed** by default (preserves state for other stack)
+- Only destroyed with `--destroy-bootstrap` flag (use with caution!)
 
-**Problem**: Pods stuck in ImagePullBackOff
-- **Solution**: 
-  - Verify image registry credentials are correct
-  - For gcr.io: Ensure `repo-key.json` content is correctly set as password
-  - Verify registry URL is accessible from the cluster
-  - Check that images have been pulled and pushed to your private registry (if using one)
+### **Stack Details**
 
-**Problem**: DQ Web not accessible
-- **Solution**: Check LoadBalancer/Ingress configuration and security group rules
+**Soda Agent Stack**:
+- EKS Cluster with managed node groups
+- Soda Agent deployed via Helm
+- See [Soda Agent Deployment](#soda-agent-deployment) section for details
 
-**Problem**: Database connection failures
-- **Solution**: 
-  - Verify RDS instance is running: `aws rds describe-db-instances --db-instance-identifier <name>`
-  - Check RDS security group allows access from EKS node security group
-  - Verify RDS is in the same VPC as EKS cluster
-  - Check RDS endpoint and credentials from Terraform outputs
+**Collibra DQ Standalone Stack**:
+- EC2-based standalone deployment
+- RDS PostgreSQL metastore
+- Application Load Balancer for web access
+- See [env/dev/eu-west-1/addons/collibra-dq-standalone/README.md](env/dev/eu-west-1/addons/collibra-dq-standalone/README.md) for detailed documentation
 
-**Problem**: License validation errors
-- **Solution**: Verify license key is valid and correctly set in environment variable
-
-**Problem**: SSL keystore errors
-- **Solution**: 
-  - Verify `keystore.jks` file exists and path is correct
-  - Ensure file contains signed certificate, keychain, and private key
-  - Ensure file is named `keystore.jks` (or specify correct name in Helm values)
-  - Check that SSL keystore secret is created: `kubectl get secret dq-ssl-secret -n collibra-dq`
-  - Verify secret contains keystore: `kubectl describe secret dq-ssl-secret -n collibra-dq`
-
-**Problem**: Spark service account permissions errors
-- **Solution**: 
-  - Verify Edit role is available in cluster: `kubectl get clusterrole edit`
-  - If Edit role unavailable, manually create Role with required permissions (see Collibra documentation)
-  - Check service account exists: `kubectl get sa -n collibra-dq`
-  - Verify RoleBinding: `kubectl get rolebinding -n collibra-dq`
-
-**Problem**: GCS access errors (if using GCS for Spark history)
-- **Solution**: 
-  - Verify GCS secret exists: `kubectl get secret spark-gcs-secret -n collibra-dq`
-  - Check service account JSON key file is valid
-  - Verify service account has access to target GCS bucket
-  - For S3: Verify IAM role is attached to Kubernetes nodes with bucket access
-
-### **Upgrading Collibra DQ**
-
-To upgrade Collibra DQ:
-
-1. **Update Chart Version**:
-   ```bash
-   export COLLIBRA_DQ_CHART_VERSION="new-version"
-   ```
-
-2. **Apply Changes**:
-   ```bash
-   cd env/dev/eu-west-1/addons/collibra-dq
-   terragrunt plan   # Review upgrade changes
-   terragrunt apply  # Apply upgrade
-   ```
-
-3. **Verify Upgrade**:
-   ```bash
-   helm list -n collibra-dq
-   kubectl get pods -n collibra-dq
-   kubectl logs -n collibra-dq -l app.kubernetes.io/name=collibra-dq
-   ```
-
-**Note**: Always review Collibra DQ release notes for breaking changes before upgrading.
-
-### **Architecture Notes**
-
-**Deployment Architecture**:
-- **Namespace**: `collibra-dq` (configurable)
-- **Release Name**: `collibra-dq` (configurable)
-- **Dependencies**: Requires EKS cluster and RDS PostgreSQL to be deployed first
-- **State Management**: Uses Terraform remote state (S3 backend)
-- **Secrets**: 
-  - License key stored as Kubernetes secret
-  - PostgreSQL credentials retrieved from RDS outputs automatically
-  - SSL keystore stored as Kubernetes secret `dq-ssl-secret` (required)
-  - Image pull secret `dq-pull-secret` created automatically from registry credentials
-  - GCS credential secret `spark-gcs-secret` (optional, if using GCS for Spark history logs)
-- **Image Registry**: 
-  - Default: Google Container Registry (`gcr.io`) with `_json_key` authentication
-  - Recommended: Pull from Collibra registry and push to private registry for control
-- **Spark Service Account**: 
-  - Default: Collibra DQ creates service account with Edit role
-  - Required permissions: get/list/create/delete/patch on pods, services, secrets, configmaps
-  - Can be manually created if Edit role unavailable
-- **Cloud Storage**: 
-  - S3: IAM Role attached to Kubernetes nodes
-  - GCS: Service account JSON key file stored as secret
 
 ## **Upgrading Soda Agent**
 

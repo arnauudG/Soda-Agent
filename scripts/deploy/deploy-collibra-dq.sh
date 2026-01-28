@@ -170,6 +170,8 @@ deploy_component() {
             ;;
         instance)
             print_status "Component: Deploying Collibra DQ EC2 Instance..."
+            # Check package filename to ensure correct environment variable is set
+            check_package_file || print_warning "Package file check failed, but continuing with instance deployment..."
             deploy_module "addons/collibra-dq-standalone" "Collibra DQ EC2 Instance"
             ;;
         sg-alb)

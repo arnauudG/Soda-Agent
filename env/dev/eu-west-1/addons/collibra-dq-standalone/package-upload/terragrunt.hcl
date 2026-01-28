@@ -21,7 +21,7 @@ locals {
     Component = "package-storage"
   })
   
-  dq_package_filename = get_env("COLLIBRA_DQ_PACKAGE_FILENAME", "dq-2025.11-SPARK356-JDK17-package-full.tar.gz")
+  dq_package_filename = get_env("COLLIBRA_DQ_PACKAGE_FILENAME", "dq-2025.11-SPARK356-JDK17-package-full.tar")
   
   # Package file path (relative to project root)
   # From: env/dev/eu-west-1/addons/collibra-dq-standalone/package-upload
