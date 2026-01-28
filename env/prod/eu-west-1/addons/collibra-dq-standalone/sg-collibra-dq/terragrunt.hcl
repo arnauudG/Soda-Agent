@@ -9,7 +9,7 @@ locals {
   env    = local.parent.locals.env
   
   path_parts = split("/", get_terragrunt_dir())
-  # From: env/dev/eu-west-1/addons/collibra-dq-standalone/sg-collibra-dq
+  # From: env/prod/eu-west-1/addons/collibra-dq-standalone/sg-collibra-dq
   # region is 4 levels up from sg-collibra-dq
   region_index = length(local.path_parts) - 4
   aws_region   = local.path_parts[local.region_index]
@@ -28,8 +28,8 @@ locals {
   # - Not set or empty: Allow from internet (0.0.0.0/0) - WARNING: Less secure
   # - Set to VPC CIDR: Allow only from within VPC (more secure)
   # - Set to specific IP: Allow only from that IP (most secure, e.g., "1.2.3.4/32")
-  # For dev: defaulting to internet access. Set COLLIBRA_DQ_ALLOWED_CIDR to restrict.
-  allowed_cidr_blocks = try(get_env("COLLIBRA_DQ_ALLOWED_CIDR", "0.0.0.0/0"), "0.0.0.0/0")
+  # For prod: defaulting to VPC CIDR only (more secure). Set COLLIBRA_DQ_ALLOWED_CIDR to override.
+  allowed_cidr_blocks = try(get_env("COLLIBRA_DQ_ALLOWED_CIDR", ""), "")
 }
 
 remote_state {
@@ -109,6 +109,7 @@ inputs = {
   ]
   
   # Ingress rules - allow access to health check and Spark UIs from VPC (for monitoring)
+  # Use VPC CIDR by default for prod (more secure), or use COLLIBRA_DQ_ALLOWED_CIDR if set
   ingress_with_cidr_blocks = [
     # DQ Agent Health Check (port 9101) - from VPC for monitoring
     {
@@ -116,7 +117,7 @@ inputs = {
       to_port     = 9101
       protocol    = "tcp"
       description = "Allow access to Collibra DQ Agent health check API from VPC"
-      cidr_blocks = dependency.vpc.outputs.vpc_cidr_block
+      cidr_blocks = local.allowed_cidr_blocks != "" ? local.allowed_cidr_blocks : dependency.vpc.outputs.vpc_cidr_block
     },
     # Spark Master Web UI (port 8080) - from VPC for monitoring
     {
@@ -124,7 +125,7 @@ inputs = {
       to_port     = 8080
       protocol    = "tcp"
       description = "Allow access to Spark Master Web UI from VPC"
-      cidr_blocks = dependency.vpc.outputs.vpc_cidr_block
+      cidr_blocks = local.allowed_cidr_blocks != "" ? local.allowed_cidr_blocks : dependency.vpc.outputs.vpc_cidr_block
     },
     # Spark Worker Web UI (port 8081) - from VPC for monitoring
     {
@@ -132,7 +133,7 @@ inputs = {
       to_port     = 8081
       protocol    = "tcp"
       description = "Allow access to Spark Worker Web UI from VPC"
-      cidr_blocks = dependency.vpc.outputs.vpc_cidr_block
+      cidr_blocks = local.allowed_cidr_blocks != "" ? local.allowed_cidr_blocks : dependency.vpc.outputs.vpc_cidr_block
     },
     # SSM access (port 443) - for Session Manager
     {

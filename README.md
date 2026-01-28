@@ -10,6 +10,7 @@ The infrastructure consists of:
 - **EKS Cluster** with managed node groups
 - **Ops Infrastructure** (EC2 instance, security groups, IAM roles)
 - **Soda Agent** deployed via Helm on EKS
+- **Collibra DQ Standalone** (optional) - EC2-based deployment with RDS PostgreSQL and ALB
 
 ## **Directory Structure**
 
@@ -34,11 +35,14 @@ Soda-Agent/
 │   │       │   ├── terragrunt.hcl  # Phase 4: EKS Cluster
 │   │       │   └── ops-ec2-eks-access/  # Phase 6: EKS Access
 │   │       └── addons/
-│   │           └── soda-agent/     # Phase 7: Soda Agent
+│   │           ├── soda-agent/     # Phase 7: Soda Agent
+│   │           └── collibra-dq-standalone/  # Collibra DQ Standalone (separate deployment)
 │   └── prod/
 │       └── eu-west-1/              # Same structure as dev
-├── deploy.sh                       # Automated deployment script
-├── destroy.sh                      # Automated destruction script
+├── deploy.sh                       # Automated deployment script (Soda Agent)
+├── deploy-collibra-dq.sh          # Collibra DQ standalone deployment script
+├── destroy.sh                      # Automated destruction script (Soda Agent)
+├── destroy-collibra-dq.sh          # Collibra DQ standalone destruction script
 ├── bootstrap.sh                    # One-time bootstrap script
 ├── destroy-bootstrap.sh            # Bootstrap destruction script
 ├── .pre-commit-config.yaml         # Pre-commit hooks configuration
@@ -242,6 +246,141 @@ cd ../vpc && terragrunt destroy --auto-approve                       # Phase 1
 - All state file versions and history
 
 **Warning**: This action is **irreversible** and will delete all state. Ensure you have backups if needed.
+
+## **Collibra DQ Standalone Deployment**
+
+Collibra DQ can be deployed as a standalone EC2 instance (separate from the main Soda Agent infrastructure).
+
+### **Prerequisites**
+
+- Network (VPC) and RDS database must be deployed first
+- Collibra DQ package file placed in `packages/collibra-dq/` directory
+- Required environment variables set (see below)
+
+### **Quick Start**
+
+```bash
+# Deploy all Collibra DQ components
+./deploy-collibra-dq.sh dev
+
+# Or for production
+./deploy-collibra-dq.sh prod
+
+# Deploy specific component
+./deploy-collibra-dq.sh dev package    # Upload package to S3
+./deploy-collibra-dq.sh dev instance    # Deploy EC2 instance
+```
+
+### **Deployment Order**
+
+The script automatically deploys in the correct order:
+
+1. Network (VPC + endpoints) - if not already deployed
+2. RDS Security Group
+3. RDS Database
+4. Collibra DQ Security Group
+5. Package Upload (uploads package from `packages/collibra-dq/` to S3)
+6. EC2 Instance (downloads package from S3 and installs Collibra DQ)
+7. ALB Security Group
+8. Application Load Balancer
+9. Target Group Attachment
+
+### **Environment Variables for Collibra DQ**
+
+**Required:**
+```bash
+export COLLIBRA_DQ_ADMIN_PASSWORD="your-secure-password"
+```
+
+**Optional:**
+```bash
+export COLLIBRA_DQ_LICENSE_KEY="your-license-key"
+export COLLIBRA_DQ_LICENSE_NAME="collibra-partners"  # Default
+export COLLIBRA_DQ_PACKAGE_FILENAME="dq-2025.11-SPARK356-JDK17-package-full.tar.gz"
+export COLLIBRA_DQ_PACKAGE_URL=""  # Leave empty to use S3 (auto-uploaded)
+export COLLIBRA_DQ_ACM_CERTIFICATE_ARN=""  # For HTTPS (prod recommended)
+export COLLIBRA_DQ_DOMAIN_NAME=""  # For HTTPS
+```
+
+### **Package Management**
+
+Place your Collibra DQ package file in:
+```
+packages/collibra-dq/dq-2025.11-SPARK356-JDK17-package-full.tar.gz
+# Or
+packages/collibra-dq/dq-2025.11-SPARK356-JDK17-package-full.tar
+```
+
+The deployment script will automatically:
+- Detect the package file
+- Upload it to S3
+- Make it available for the EC2 instance to download
+
+### **Production vs Development**
+
+**Dev Environment:**
+- Instance: `m5.large` (2 vCPU, 8GB RAM)
+- Volume: 100 GB
+- ALB deletion protection: Disabled
+- ALB logging: Disabled
+
+**Prod Environment:**
+- Instance: `m5.xlarge` (4 vCPU, 16GB RAM)
+- Volume: 200 GB
+- ALB deletion protection: Enabled
+- ALB logging: Enabled
+- HTTPS recommended (set `COLLIBRA_DQ_ACM_CERTIFICATE_ARN`)
+
+### **Destroy Collibra DQ**
+
+```bash
+# Destroy all Collibra DQ components
+./destroy-collibra-dq.sh dev
+
+# Destroy specific component
+./destroy-collibra-dq.sh dev instance
+./destroy-collibra-dq.sh dev database
+```
+
+**Warning**: Destroying the database will delete all Collibra DQ data!
+
+### **Accessing Collibra DQ**
+
+After deployment:
+
+1. Get ALB DNS name:
+   ```bash
+   cd env/dev/eu-west-1/addons/collibra-dq-standalone/alb
+   terragrunt output alb_dns_name
+   ```
+
+2. Access web interface:
+   ```
+   http://<alb-dns-name>
+   ```
+
+3. Login:
+   - Username: `admin`
+   - Password: Value set in `COLLIBRA_DQ_ADMIN_PASSWORD`
+
+### **Monitoring**
+
+Check deployment status:
+```bash
+./check-deployment-status.sh dev
+```
+
+Connect to instance:
+```bash
+cd env/dev/eu-west-1/addons/collibra-dq-standalone
+INSTANCE_ID=$(terragrunt output -raw instance_id)
+aws ssm start-session --target $INSTANCE_ID --region eu-west-1
+```
+
+View installation logs:
+```bash
+sudo tail -f /var/log/collibra-dq-install.log
+```
 
 ## **Environment Variables**
 
@@ -1758,8 +1897,14 @@ If you encounter agent ID issues or need to start completely fresh:
 
 ---
 
-### **Recent Updates (January 24, 2025)**
+### **Recent Updates (January 28, 2025)**
 
+- **Collibra DQ Standalone**: Added standalone EC2-based deployment option for Collibra DQ
+  - Automated package upload to S3
+  - EC2 instance with automated installation
+  - Application Load Balancer for web access
+  - Support for both dev and prod environments
+  - Production-ready configuration (larger instances, deletion protection, logging)
 - **Soda Agent Upgrade**: Successfully upgraded from `1.2.4` to `1.3.13`
 - **Image Credentials Configuration**: Implemented automatic fallback to main API keys for image registry authentication
 - **Fresh Install Process**: Documented procedure for clean agent reinstallation
@@ -1771,13 +1916,12 @@ If you encounter agent ID issues or need to start completely fresh:
 
 ### **Future Enhancements**
 
-- **CI/CD Pipeline**: Automated deployment workflows (GitHub Actions, GitLab CI, etc.) - planned for future implementation
 - **Automated Testing**: Integration tests for infrastructure deployments
 - **Monitoring & Alerting**: Enhanced observability and alerting for deployed components
 
 ---
 
-**Last Updated**: January 24, 2025  
+**Last Updated**: January 28, 2025  
 **Terraform Version**: >= 1.6  
 **Terragrunt Version**: >= 0.54  
 **AWS Provider**: >= 5.0, < 6.0  

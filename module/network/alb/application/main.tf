@@ -29,14 +29,29 @@ module "alb" {
   # Security groups
   security_groups = var.security_groups
 
-  # Access logs
-  enable_logging = var.enable_logging
-  log_bucket_name = var.log_bucket_name
+  # Access logs (v9.0.0 uses access_logs map instead of enable_logging)
+  # Only set access_logs if logging is enabled and bucket is provided
+  access_logs = var.enable_logging && var.log_bucket_name != "" ? {
+    bucket = var.log_bucket_name
+  } : {}
 
-  # Listeners
-  listeners = var.listeners
+  # Listeners - transform to ensure only one action type is present
+  # The module may check all action types, so we only include the one being used
+  listeners = {
+    for k, v in var.listeners : k => merge(
+      {
+        port            = v.port
+        protocol        = v.protocol
+        certificate_arn = v.certificate_arn
+        ssl_policy      = v.ssl_policy
+      },
+      v.forward != null ? { forward = v.forward } : {},
+      v.fixed_response != null ? { fixed_response = v.fixed_response } : {},
+      v.redirect != null ? { redirect = v.redirect } : {}
+    )
+  }
 
-  # Target groups
+  # Target groups (v9.0.0 - targets attached separately, not in target_groups)
   target_groups = var.target_groups
 
   tags = var.tags

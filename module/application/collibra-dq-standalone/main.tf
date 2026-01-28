@@ -11,9 +11,10 @@ terraform {
   }
 }
 
-# Use the EC2 module
+# Use the EC2 instance module directly (no dependency on sibling modules)
 module "ec2" {
-  source = "../../compute/ec2/ops"
+  source  = "terraform-aws-modules/ec2-instance/aws"
+  version = "~> 6.0"
 
   name = var.name
 
@@ -48,6 +49,8 @@ module "ec2" {
     dq_admin_user_password    = var.dq_admin_user_password
     dq_package_url            = var.dq_package_url
     dq_package_filename        = var.dq_package_filename
+    license_key               = var.license_key
+    license_name              = var.license_name
   }))
   user_data_replace_on_change = true
 

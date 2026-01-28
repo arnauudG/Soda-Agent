@@ -9,7 +9,7 @@ locals {
   env    = local.parent.locals.env
   
   path_parts = split("/", get_terragrunt_dir())
-  # From: env/dev/eu-west-1/addons/collibra-dq-standalone/alb/sg-alb
+  # From: env/prod/eu-west-1/addons/collibra-dq-standalone/alb/sg-alb
   # region is 5 levels up from sg-alb
   region_index = length(local.path_parts) - 5
   aws_region   = local.path_parts[local.region_index]
@@ -90,7 +90,7 @@ inputs = {
       from_port   = 80
       to_port     = 80
       protocol    = "tcp"
-      description = "Allow HTTP from internet (will redirect to HTTPS)"
+      description = "Allow HTTP from internet (will redirect to HTTPS if certificate configured)"
       cidr_blocks = "0.0.0.0/0"
     }
   ]

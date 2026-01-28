@@ -3,6 +3,10 @@ set -euxo pipefail
 
 # Collibra DQ Spark Standalone Installation Script
 # This script installs Collibra DQ on an EC2 instance with Spark Standalone
+# 
+# Note: Collibra DQ documentation recommends CentOS or RHEL 7
+# This script is designed for Amazon Linux 2023 (AL2023) which is compatible
+# If using CentOS/RHEL 7, adjust package manager commands (yum instead of dnf)
 
 # --------- template vars (Terraform renders these) ---------
 REGION="${region}"
@@ -16,6 +20,8 @@ SPARK_PACKAGE="${spark_package}"
 DQ_ADMIN_USER_PASSWORD="${dq_admin_user_password}"
 DQ_PACKAGE_URL="${dq_package_url}"
 DQ_PACKAGE_FILENAME="${dq_package_filename}"
+LICENSE_KEY="${license_key}"
+LICENSE_NAME="${license_name}"
 
 # Always (re)enable & restart SSM even if something fails
 finish() {
@@ -29,8 +35,21 @@ exec > >(tee -a /var/log/collibra-dq-install.log) 2>&1
 echo "Starting Collibra DQ installation at $(date)"
 
 # --------- Base system setup ---------
-dnf -y update
-dnf -y install unzip curl git jq wget tar gzip java-17-amazon-corretto-headless || true
+dnf -y update || true
+
+# Install base packages (handle curl conflicts by allowing erasing conflicting packages)
+dnf -y install --allowerasing unzip curl git jq wget tar gzip || true
+
+# Install Java 17 (Amazon Corretto)
+# Use --allowerasing to handle any package conflicts
+dnf -y install --allowerasing java-17-amazon-corretto-headless || {
+  echo "WARNING: Failed to install java-17-amazon-corretto-headless, trying alternative..."
+  # Try installing without headless variant
+  dnf -y install --allowerasing java-17-amazon-corretto || {
+    echo "ERROR: Could not install Java 17. Installation cannot continue."
+    exit 1
+  }
+}
 
 # Set JAVA_HOME
 export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
@@ -39,26 +58,72 @@ echo "export JAVA_HOME=$JAVA_HOME" >> /etc/profile.d/java.sh
 echo "export PATH=\$JAVA_HOME/bin:\$PATH" >> /etc/profile.d/java.sh
 
 # Verify Java installation
-java -version || { echo "Java installation failed"; exit 1; }
+if ! java -version 2>&1 | grep -q "openjdk version\|java version"; then
+  echo "ERROR: Java installation verification failed"
+  echo "Attempting to find Java installation..."
+  find /usr/lib/jvm -name "java" -type f 2>/dev/null | head -1
+  exit 1
+fi
+echo "Java installation verified successfully"
 
 # --------- Create OWL_BASE directory ---------
 mkdir -p "$OWL_BASE"
 cd "$OWL_BASE"
 
 # --------- Download and extract Collibra DQ package ---------
-if [ -n "$DQ_PACKAGE_URL" ] && [ "$DQ_PACKAGE_URL" != "" ]; then
+# Check if package file already exists (uploaded manually)
+if [ -f "$OWL_BASE/$DQ_PACKAGE_FILENAME" ]; then
+  echo "Package file already exists at $OWL_BASE/$DQ_PACKAGE_FILENAME, skipping download"
+  cd "$OWL_BASE"
+elif [ -n "$DQ_PACKAGE_URL" ] && [ "$DQ_PACKAGE_URL" != "" ]; then
   echo "Downloading Collibra DQ package from $DQ_PACKAGE_URL"
-  wget -q "$DQ_PACKAGE_URL" -O "$DQ_PACKAGE_FILENAME" || { echo "Failed to download DQ package"; exit 1; }
+  cd "$OWL_BASE"
   
-  echo "Extracting Collibra DQ package"
-  tar -xvf "$DQ_PACKAGE_FILENAME" || { echo "Failed to extract DQ package"; exit 1; }
-  
-  # Clean up
-  rm -f "$DQ_PACKAGE_FILENAME" || true
+  # Check if URL is an S3 URL (s3:// or https://*.s3.*)
+  if echo "$DQ_PACKAGE_URL" | grep -qE "^s3://|https://.*\.s3\."; then
+    echo "Detected S3 URL, using AWS CLI to download"
+    aws s3 cp "$DQ_PACKAGE_URL" "$DQ_PACKAGE_FILENAME" || { echo "Failed to download DQ package from S3"; exit 1; }
+  else
+    # Try wget first, then curl with headers as fallback
+    echo "Attempting download with wget..."
+    wget -q "$DQ_PACKAGE_URL" -O "$DQ_PACKAGE_FILENAME" || {
+      echo "wget failed, trying curl with headers..."
+      curl -L -H "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" \
+           -H "Accept: */*" \
+           "$DQ_PACKAGE_URL" -o "$DQ_PACKAGE_FILENAME" || {
+        echo "Failed to download DQ package from $DQ_PACKAGE_URL"
+        echo "Please verify the URL is valid and accessible, or upload the package manually to $OWL_BASE"
+        exit 1
+      }
+    }
+  fi
 else
-  echo "DQ_PACKAGE_URL not provided. Assuming package is already present or will be uploaded manually."
-  echo "Please ensure $DQ_PACKAGE_FILENAME is available in $OWL_BASE"
+  echo "DQ_PACKAGE_URL not provided. Checking if package is already present..."
+  cd "$OWL_BASE"
+  if [ ! -f "$DQ_PACKAGE_FILENAME" ]; then
+    echo "ERROR: Package file not found and DQ_PACKAGE_URL not provided"
+    echo "Please either:"
+    echo "  1. Set DQ_PACKAGE_URL environment variable"
+    echo "  2. Upload $DQ_PACKAGE_FILENAME to $OWL_BASE manually"
+    exit 1
+  fi
+  echo "Package file found at $OWL_BASE/$DQ_PACKAGE_FILENAME"
 fi
+
+# Extract the package (whether downloaded or pre-existing)
+echo "Extracting Collibra DQ package"
+# Handle both .tar.gz and .zip files
+if echo "$DQ_PACKAGE_FILENAME" | grep -qE "\.zip$"; then
+  unzip -q "$DQ_PACKAGE_FILENAME" || { echo "Failed to extract DQ package (zip)"; exit 1; }
+elif echo "$DQ_PACKAGE_FILENAME" | grep -qE "\.tar\.gz$|\.tgz$"; then
+  tar -xvf "$DQ_PACKAGE_FILENAME" || { echo "Failed to extract DQ package (tar.gz)"; exit 1; }
+else
+  echo "ERROR: Unknown package format. Expected .tar.gz, .tgz, or .zip"
+  exit 1
+fi
+
+# Clean up the archive (optional - comment out if you want to keep it)
+rm -f "$DQ_PACKAGE_FILENAME" || true
 
 # --------- Set environment variables ---------
 cat >> /etc/profile.d/collibra-dq.sh <<EOF
@@ -67,6 +132,7 @@ export OWL_METASTORE_USER=$OWL_METASTORE_USER
 export OWL_METASTORE_PASS=$OWL_METASTORE_PASS
 export SPARK_PACKAGE=$SPARK_PACKAGE
 export DQ_ADMIN_USER_PASSWORD=$DQ_ADMIN_USER_PASSWORD
+export LICENSE_KEY=$LICENSE_KEY
 EOF
 
 # Source the environment variables
@@ -100,6 +166,63 @@ chmod +x "$SETUP_SCRIPT"
   -options=spark,owlweb,owlagent \
   -pgserver="$PG_SERVER" || { echo "Collibra DQ setup failed"; exit 1; }
 
+# --------- Configure License Key and Name ---------
+# According to Collibra DQ documentation, license key and name should be set in owl-env.sh
+# Find owl-env.sh file (typically in $OWL_BASE/owl/config/owl-env.sh)
+# Now that setup.sh has run, the file should exist
+OWL_ENV_SCRIPT=$(find "$OWL_BASE" -name "owl-env.sh" -type f | head -1)
+LICENSE_CONFIGURED=false
+
+if [ -n "$OWL_ENV_SCRIPT" ] && [ -n "$LICENSE_KEY" ] && [ "$LICENSE_KEY" != "" ]; then
+  echo "Configuring Collibra DQ license key and name"
+  
+  # Backup original file
+  cp "$OWL_ENV_SCRIPT" "$${OWL_ENV_SCRIPT}.backup" || true
+  
+  # Add or update LICENSE_KEY in owl-env.sh
+  if grep -q "^export LICENSE_KEY=" "$OWL_ENV_SCRIPT"; then
+    # Update existing license key
+    sed -i "s|^export LICENSE_KEY=.*|export LICENSE_KEY=$LICENSE_KEY|" "$OWL_ENV_SCRIPT"
+  else
+    # Add license key if it doesn't exist
+    echo "" >> "$OWL_ENV_SCRIPT"
+    echo "# Collibra DQ License Key" >> "$OWL_ENV_SCRIPT"
+    echo "export LICENSE_KEY=$LICENSE_KEY" >> "$OWL_ENV_SCRIPT"
+  fi
+  
+  # Add or update LICENSE_NAME if provided
+  if [ -n "$LICENSE_NAME" ] && [ "$LICENSE_NAME" != "" ]; then
+    if grep -q "^export LICENSE_NAME=" "$OWL_ENV_SCRIPT"; then
+      # Update existing license name
+      sed -i "s|^export LICENSE_NAME=.*|export LICENSE_NAME=$LICENSE_NAME|" "$OWL_ENV_SCRIPT"
+    else
+      # Add license name if it doesn't exist
+      echo "export LICENSE_NAME=$LICENSE_NAME" >> "$OWL_ENV_SCRIPT"
+    fi
+    echo "License name configured in $OWL_ENV_SCRIPT"
+  else
+    echo "WARNING: LICENSE_NAME not provided. You may need to set it manually in $OWL_ENV_SCRIPT"
+  fi
+  
+  echo "License key configured in $OWL_ENV_SCRIPT"
+  LICENSE_CONFIGURED=true
+  
+  # Source the updated owl-env.sh to load the license
+  source "$OWL_ENV_SCRIPT" || true
+else
+  if [ -z "$OWL_ENV_SCRIPT" ]; then
+    echo "WARNING: owl-env.sh file not found. License key may need to be configured manually after setup completes."
+    echo "Expected location: $OWL_BASE/owl/config/owl-env.sh"
+  fi
+  if [ -z "$LICENSE_KEY" ] || [ "$LICENSE_KEY" == "" ]; then
+    echo "WARNING: LICENSE_KEY not provided. Collibra DQ may require license activation after first startup."
+    echo "To set manually after installation:"
+    echo "  echo 'export LICENSE_KEY=<key>' >> $OWL_BASE/owl/config/owl-env.sh"
+    echo "  echo 'export LICENSE_NAME=<name>' >> $OWL_BASE/owl/config/owl-env.sh"
+    echo "  ./owlmanage.sh stop=owlweb && ./owlmanage.sh start=owlweb"
+  fi
+fi
+
 # --------- Configure firewall (if firewalld is installed) ---------
 if command -v firewall-cmd >/dev/null 2>&1; then
   systemctl enable firewalld || true
@@ -118,14 +241,24 @@ OWL_MANAGE_SCRIPT=$(find "$OWL_BASE" -name "owlmanage.sh" -type f | head -1)
 if [ -n "$OWL_MANAGE_SCRIPT" ]; then
   chmod +x "$OWL_MANAGE_SCRIPT"
   
-  # Source owl-env.sh if it exists
-  OWL_ENV_SCRIPT=$(find "$OWL_BASE" -name "owl-env.sh" -type f | head -1)
-  if [ -n "$OWL_ENV_SCRIPT" ]; then
+  # Source owl-env.sh if it exists (reuse the one found during license configuration)
+  if [ -n "$OWL_ENV_SCRIPT" ] && [ -f "$OWL_ENV_SCRIPT" ]; then
     source "$OWL_ENV_SCRIPT"
   fi
   
+  # Start Collibra DQ services
   echo "Starting Collibra DQ services"
   "$OWL_MANAGE_SCRIPT" start=all || { echo "Failed to start Collibra DQ services"; exit 1; }
+  
+  # If license was configured, restart DQ Web service to load the license
+  # According to Collibra DQ documentation: stop=owlweb, then start=owlweb
+  if [ "$LICENSE_CONFIGURED" = true ]; then
+    echo "Restarting DQ Web service to load license configuration"
+    "$OWL_MANAGE_SCRIPT" stop=owlweb || true
+    sleep 3  # Give it time to stop
+    "$OWL_MANAGE_SCRIPT" start=owlweb || { echo "Failed to restart DQ Web service"; exit 1; }
+    echo "DQ Web service restarted with license configuration"
+  fi
 else
   echo "WARNING: owlmanage.sh not found. Services may need to be started manually."
 fi

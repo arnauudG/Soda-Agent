@@ -37,8 +37,16 @@ variable "subnet_id" {
 
 variable "root_block_device" {
   description = "Root block device configuration"
-  type        = list(any)
-  default     = []
+  type = object({
+    volume_size           = optional(number)
+    volume_type           = optional(string)
+    iops                  = optional(number)
+    throughput            = optional(number)
+    encrypted             = optional(bool)
+    delete_on_termination = optional(bool)
+    kms_key_id            = optional(string)
+  })
+  default = null
 }
 
 variable "create_iam_instance_profile" {
@@ -174,4 +182,17 @@ variable "dq_package_filename" {
   description = "Filename of the DQ package (e.g., dq-full-package.tar.gz)"
   type        = string
   default     = "dq-full-package.tar.gz"
+}
+
+variable "license_key" {
+  description = "Collibra DQ license key (required for activation - provided by Collibra in license provision email)"
+  type        = string
+  sensitive   = true
+}
+
+variable "license_name" {
+  description = "Collibra DQ license name (required for activation - provided by Collibra in license provision email)"
+  type        = string
+  sensitive   = true
+  default     = ""
 }

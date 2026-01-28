@@ -22,18 +22,35 @@ locals {
   lock_table   = "${get_aws_account_id()}-${local.org}-${local.env}-tf-locks"
   
   # ACM certificate ARN (can be set via environment variable or created separately)
-  # For dev: can use self-signed or request a certificate via ACM
+  # For prod: HTTPS is strongly recommended - set COLLIBRA_DQ_ACM_CERTIFICATE_ARN
   acm_certificate_arn = get_env("COLLIBRA_DQ_ACM_CERTIFICATE_ARN", "")
   
   # Domain name for the certificate (optional)
   domain_name = get_env("COLLIBRA_DQ_DOMAIN_NAME", "")
   
   # Build listeners map
-  # For now: HTTP only (dev/testing)
-  # To enable HTTPS: Set COLLIBRA_DQ_ACM_CERTIFICATE_ARN and update this configuration
-  # Note: Terraform conditionals require consistent types, so HTTPS support requires
-  #       modifying this configuration manually or using a more complex merge approach
-  listeners_map = {
+  # For prod: HTTPS is recommended. If certificate is provided, enable HTTPS and redirect HTTP.
+  # If no certificate, only HTTP listener (not recommended for production)
+  listeners_map = local.acm_certificate_arn != "" ? {
+    https = {
+      port            = 443
+      protocol        = "HTTPS"
+      certificate_arn = local.acm_certificate_arn
+      ssl_policy      = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+      forward = {
+        target_group_key = "collibra-dq"
+      }
+    }
+    http = {
+      port     = 80
+      protocol = "HTTP"
+      redirect = {
+        port        = "443"
+        protocol    = "HTTPS"
+        status_code = "HTTP_301"
+      }
+    }
+  } : {
     http = {
       port     = 80
       protocol = "HTTP"
@@ -42,33 +59,6 @@ locals {
       }
     }
   }
-  
-  # TODO: Add HTTPS listener when certificate is available
-  # When COLLIBRA_DQ_ACM_CERTIFICATE_ARN is set, update listeners_map to:
-  # listeners_map = {
-  #   https = {
-  #     port            = 443
-  #     protocol        = "HTTPS"
-  #     certificate_arn = local.acm_certificate_arn
-  #     ssl_policy      = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  #     default_action = {
-  #       type             = "forward"
-  #       target_group_key = "collibra-dq"
-  #     }
-  #   }
-  #   http = {
-  #     port     = 80
-  #     protocol = "HTTP"
-  #     default_action = {
-  #       type = "redirect"
-  #       redirect = {
-  #         port        = "443"
-  #         protocol    = "HTTPS"
-  #         status_code = "HTTP_301"
-  #       }
-  #     }
-  #   }
-  # }
 }
 
 remote_state {
@@ -130,31 +120,26 @@ terraform {
   source = "${local.modules_root}/network/alb/application"
 }
 
-# Note: Module outputs are available via dependency.alb.outputs.*
-# The module already provides: load_balancer_dns_name, load_balancer_arn, 
-# load_balancer_zone_id, target_group_arns, etc.
-
 inputs = {
   name = "${local.org}-${local.env}-collibra-dq-alb"
   vpc_id = dependency.vpc.outputs.vpc_id
   subnets = dependency.vpc.outputs.public_subnets
   internal = false  # Internet-facing ALB
   
-  enable_deletion_protection = false  # Dev: allow deletion
+  enable_deletion_protection = true  # Prod: enable deletion protection
   enable_http2 = true
   enable_cross_zone_load_balancing = true
   
   security_groups = [dependency.sg_alb.outputs.security_group_id]
   
-  enable_logging = false  # Dev: disable to save costs
+  enable_logging = true  # Prod: enable access logs for security and monitoring
   
   # Listeners configuration
   # If ACM certificate is provided, enable HTTPS listener and redirect HTTP to HTTPS
-  # If no certificate, only HTTP listener (for dev/testing)
+  # If no certificate, only HTTP listener (not recommended for production)
   listeners = local.listeners_map
   
   # Target group for Collibra DQ instance
-  # Note: v9.0.0 does not support targets array - targets attached separately
   target_groups = {
     collibra-dq = {
       name                 = "${local.org}-${local.env}-collibra-dq-tg"

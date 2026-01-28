@@ -55,27 +55,32 @@ variable "log_bucket_name" {
 }
 
 variable "listeners" {
-  description = "List of listener configurations"
+  description = "Map of listener configurations (v9.0.0 format)"
   type = map(object({
     port            = number
     protocol        = string
     certificate_arn = optional(string)
     ssl_policy      = optional(string)
-    default_action = object({
-      type             = string
-      target_group_key = optional(string)
-      redirect         = optional(object({
-        port        = string
-        protocol    = string
-        status_code = string
-      }))
-    })
+    # v9.0.0 uses forward, fixed_response, or redirect directly (not wrapped in default_action)
+    forward = optional(object({
+      target_group_key = string
+    }))
+    fixed_response = optional(object({
+      content_type = string
+      message_body = optional(string)
+      status_code  = string
+    }))
+    redirect = optional(object({
+      port        = string
+      protocol    = string
+      status_code = string
+    }))
   }))
   default = {}
 }
 
 variable "target_groups" {
-  description = "List of target group configurations"
+  description = "Map of target group configurations (v9.0.0 format - targets attached separately)"
   type = map(object({
     name                 = string
     backend_protocol     = string
@@ -93,10 +98,10 @@ variable "target_groups" {
       timeout             = number
       unhealthy_threshold = number
     })
-    targets = list(object({
-      id   = string
-      port = number
-    }))
+    # Set to false to disable module-managed target attachments (attach separately)
+    create_attachment = optional(bool, false)
+    # Note: v9.0.0 does NOT support targets array in target_groups
+    # Use additional_target_group_attachments or attach targets separately
   }))
   default = {}
 }

@@ -8,7 +8,7 @@ locals {
   org    = local.parent.locals.org
   env    = local.parent.locals.env
   
-  # Extract region from path: env/dev/eu-west-1/addons/collibra-dq-standalone
+  # Extract region from path: env/prod/eu-west-1/addons/collibra-dq-standalone
   path_parts = split("/", get_terragrunt_dir())
   region_index = length(local.path_parts) - 3
   aws_region   = local.path_parts[local.region_index]
@@ -26,11 +26,10 @@ locals {
   lock_table   = "${get_aws_account_id()}-${local.org}-${local.env}-tf-locks"
   
   # Instance configuration
-  # For dev: using m5.large (2 vCPU, 8GB RAM) - sufficient for testing
-  # For production: consider m5.xlarge (4 vCPU, 16GB RAM) or larger based on workload
+  # For prod: using m5.xlarge (4 vCPU, 16GB RAM) - recommended for production workloads
   instance_config = {
-    instance_type = "m5.large"  # Dev: 2 vCPU, 8GB RAM - can be upgraded to m5.xlarge for production
-    volume_size   = 100          # GB - enough for DQ installation and data
+    instance_type = "m5.xlarge"  # Prod: 4 vCPU, 16GB RAM - suitable for production workloads
+    volume_size   = 200          # GB - larger volume for production data
   }
   
   # Collibra DQ configuration from environment variables
@@ -46,9 +45,9 @@ locals {
   
   # Package file path (relative to project root)
   # Automatically detects package file in packages/collibra-dq/ directory
-  # From: env/dev/eu-west-1/addons/collibra-dq-standalone
+  # From: env/prod/eu-west-1/addons/collibra-dq-standalone
   # To: packages/collibra-dq/ (at project root)
-  # Path: collibra-dq-standalone -> addons -> eu-west-1 -> dev -> env -> project root
+  # Path: collibra-dq-standalone -> addons -> eu-west-1 -> prod -> env -> project root
   # So: ../../../../../packages/collibra-dq/
   package_local_path = "${get_terragrunt_dir()}/../../../../../packages/collibra-dq/${local.dq_package_filename}"
   
@@ -213,7 +212,7 @@ inputs = {
   
   placement_group = null
   tenancy         = "default"
-  ebs_optimized   = true  # Enable for m5.large (supported)
+  ebs_optimized   = true  # Enable for m5.xlarge (supported)
   monitoring      = true
   
   # Collibra DQ configuration
