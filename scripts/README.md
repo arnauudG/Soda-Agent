@@ -9,6 +9,7 @@ scripts/
 ├── test-collibra-dq-deployment.sh  # Comprehensive testing for Collibra DQ
 ├── test-modules.sh                  # Validates Terraform modules
 ├── test-terragrunt.sh               # Validates Terragrunt configurations
+├── validate-env.sh                   # Environment variable validation
 ├── utils/                            # Utility scripts
 │   └── check-deployment-status.sh   # Quick deployment status check
 └── README.md                         # This file
@@ -41,6 +42,16 @@ Tests all components:
 ./scripts/test-terragrunt.sh [env] [region]
 # Example: ./scripts/test-terragrunt.sh dev eu-west-1
 ```
+
+**Environment Validation** (called automatically by deploy scripts):
+```bash
+./scripts/validate-env.sh <stack>
+# Example: ./scripts/validate-env.sh soda-agent
+```
+
+Validates required environment variables before deployment:
+- Soda Agent: `SODA_API_KEY_ID`, `SODA_API_KEY_SECRET`
+- Collibra DQ: `COLLIBRA_DQ_ADMIN_PASSWORD`, `COLLIBRA_DQ_LICENSE_KEY`
 
 ### Utility Scripts
 

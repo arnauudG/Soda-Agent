@@ -12,17 +12,28 @@ The infrastructure consists of:
 - **Soda Agent** deployed via Helm on EKS
 - **Collibra DQ Standalone** (optional) - EC2-based deployment with RDS PostgreSQL and ALB
 
-For detailed infrastructure documentation, see [docs/INFRASTRUCTURE.md](docs/INFRASTRUCTURE.md).
-
 ## **Directory Structure**
 
 ```
 Soda-Agent/
-├── docs/                           # Documentation
-│   └── INFRASTRUCTURE.md          # Infrastructure overview and patterns
 ├── module/                         # Shared Terraform modules
-│   ├── helm-soda-agent/           # Soda Agent Helm deployment
-│   └── ops-ec2-eks-access/        # EKS access configuration
+│   ├── application/               # Application modules
+│   │   ├── helm/soda-agent/      # Soda Agent Helm deployment
+│   │   └── collibra-dq-standalone/ # Collibra DQ EC2 deployment
+│   ├── compute/                   # Compute modules
+│   │   ├── ec2/ops/              # EC2 ops instance
+│   │   └── eks/cluster/          # EKS cluster
+│   ├── database/                  # Database modules
+│   │   └── rds/postgresql/       # RDS PostgreSQL
+│   ├── network/                   # Network modules
+│   │   ├── vpc/                  # VPC with subnets
+│   │   ├── vpc-endpoints/        # VPC endpoints
+│   │   └── alb/                  # Application Load Balancer
+│   ├── security/                  # Security modules
+│   │   ├── iam/ops-eks-access/   # EKS access configuration
+│   │   └── security-group/       # Security groups
+│   └── storage/                   # Storage modules
+│       └── s3-package/           # S3 package storage
 ├── env/                            # Environment-specific configurations
 │   ├── dev/
 │   │   ├── root.hcl               # Environment-level config (env = "dev")
@@ -218,108 +229,6 @@ If you need to deploy components manually, follow this order:
 10. Application Load Balancer (`addons/collibra-dq-standalone/alb`) - HTTP/HTTPS
 11. Target Group Attachment (`addons/collibra-dq-standalone/alb/target-group-attachment`)
 
-## **Unified Stack Deployment**
-
-Use the unified deployment scripts to deploy entire stacks:
-
-```bash
-# Deploy Soda Agent stack
-./deploy-stack.sh soda-agent <env>
-
-# Deploy Collibra DQ Standalone stack
-./deploy-stack.sh collibra-dq <env>
-
-# Examples:
-./deploy-stack.sh soda-agent prod        # Deploy Soda Agent stack
-./deploy-stack.sh collibra-dq dev        # Deploy Collibra DQ stack
-```
-
-**Note**: Bootstrap is automatically created if missing. Shared resources (VPC, endpoints) are reused if already deployed.
-
-## **Unified Stack Destruction**
-
-Use the unified destruction scripts to destroy entire stacks:
-
-```bash
-# Destroy Soda Agent stack (keeps shared resources)
-./destroy-stack.sh soda-agent <env>
-
-# Destroy Collibra DQ Standalone stack (keeps shared resources)
-./destroy-stack.sh collibra-dq <env>
-
-# Examples:
-./destroy-stack.sh soda-agent prod        # Destroy Soda Agent stack
-./destroy-stack.sh collibra-dq dev        # Destroy Collibra DQ stack
-```
-
-**Bootstrap Handling**:
-- Bootstrap is **preserved by default** (shared between stacks)
-- Only destroyed with `--destroy-bootstrap` flag (use with caution!)
-- Script checks if other stack exists before destroying shared resources (VPC, endpoints)
-
-```bash
-# Destroy bootstrap (only if both stacks are destroyed)
-./destroy-stack.sh soda-agent dev --destroy-bootstrap
-```
-
-**What Gets Destroyed:**
-- S3 bucket containing all Terraform state files
-- DynamoDB table for state locking
-- All state file versions and history
-
-**Warning**: This action is **irreversible** and will delete all state. Ensure you have backups if needed.
-
-## **Unified Stack Deployment**
-
-Deploy either stack using the unified deployment scripts:
-
-### **Deploy a Stack**
-
-```bash
-# Deploy Soda Agent stack
-./deploy-stack.sh soda-agent dev
-
-# Deploy Collibra DQ Standalone stack
-./deploy-stack.sh collibra-dq dev
-
-# For production
-./deploy-stack.sh soda-agent prod
-./deploy-stack.sh collibra-dq prod
-```
-
-### **Destroy a Stack**
-
-```bash
-# Destroy Soda Agent stack (keeps shared resources)
-./destroy-stack.sh soda-agent dev
-
-# Destroy Collibra DQ Standalone stack (keeps shared resources)
-./destroy-stack.sh collibra-dq dev
-
-# Destroy bootstrap (only if both stacks are destroyed)
-./destroy-stack.sh soda-agent dev --destroy-bootstrap
-```
-
-### **Bootstrap Handling**
-
-- **Bootstrap is shared** between both stacks
-- Automatically created if missing during deployment
-- **Not destroyed** by default (preserves state for other stack)
-- Only destroyed with `--destroy-bootstrap` flag (use with caution!)
-
-### **Stack Details**
-
-**Soda Agent Stack**:
-- EKS Cluster with managed node groups
-- Soda Agent deployed via Helm
-- See [Soda Agent Deployment](#soda-agent-deployment) section for details
-
-**Collibra DQ Standalone Stack**:
-- EC2-based standalone deployment
-- RDS PostgreSQL metastore
-- Application Load Balancer for web access
-- See [Collibra DQ Standalone Stack Deployment](#collibra-dq-standalone-stack-deployment) section below
-
 ## **Environment Variables**
 
 ### **Required for Soda Agent**
@@ -444,11 +353,11 @@ cp env/dev/eu-west-1/ops/sg-ops/terragrunt.hcl env/prod/eu-west-1/ops/sg-ops/ter
 
 **Solution**: Always use the automated deployment scripts:
 ```bash
-# For full deployment
-./deploy.sh <env>
+# Deploy Soda Agent stack
+./deploy-stack.sh soda-agent <env>
 
-# For specific phases
-./deploy.sh <env> <phase>
+# Deploy Collibra DQ stack
+./deploy-stack.sh collibra-dq <env>
 ```
 
 ### **11. Bootstrap Destruction Issues**
@@ -631,16 +540,6 @@ bootstrap (one-time)
 # Examples:
 ./destroy-stack.sh soda-agent dev                    # Destroy Soda Agent stack
 ./destroy-stack.sh collibra-dq prod                  # Destroy Collibra DQ stack
-```
-
-### **Bootstrap**
-```bash
-# Bootstrap is automatically created by deploy-stack.sh if missing
-# To manually bootstrap:
-./deploy-bootstrap.sh <env>           # Bootstrap new environment (one-time)
-
-# To destroy bootstrap (only after both stacks are destroyed):
-./destroy-stack.sh <stack> <env> --destroy-bootstrap
 ```
 
 ### **Validate Configuration**
@@ -1586,7 +1485,7 @@ If you encounter agent ID issues or need to start completely fresh:
 
 ---
 
-**Last Updated**: January 28, 2025  
+**Last Updated**: January 29, 2026  
 **Terraform Version**: >= 1.6  
 **Terragrunt Version**: >= 0.54  
 **AWS Provider**: >= 5.0, < 6.0  
