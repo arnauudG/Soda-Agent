@@ -23,13 +23,13 @@ locals {
   state_bucket = "${get_aws_account_id()}-${local.org}-${local.env}-tfstate-${local.aws_region}"
   lock_table   = "${get_aws_account_id()}-${local.org}-${local.env}-tf-locks"
   
-  # Allow access from specific IPs, VPC CIDR, or internet
+  # Allow access from specific IPs or VPC CIDR
   # Options:
-  # - Not set or empty: Allow from internet (0.0.0.0/0) - WARNING: Less secure
-  # - Set to VPC CIDR: Allow only from within VPC (more secure)
+  # - Not set or empty: Allow from VPC CIDR only (secure default)
   # - Set to specific IP: Allow only from that IP (most secure, e.g., "1.2.3.4/32")
-  # For dev: defaulting to internet access. Set COLLIBRA_DQ_ALLOWED_CIDR to restrict.
-  allowed_cidr_blocks = try(get_env("COLLIBRA_DQ_ALLOWED_CIDR", "0.0.0.0/0"), "0.0.0.0/0")
+  # For dev: defaulting to VPC CIDR (same as prod for consistency and security)
+  # Set COLLIBRA_DQ_ALLOWED_CIDR to override if needed
+  allowed_cidr_blocks = try(get_env("COLLIBRA_DQ_ALLOWED_CIDR", ""), "")
 }
 
 remote_state {
@@ -41,24 +41,6 @@ remote_state {
     dynamodb_table = local.lock_table
     encrypt        = true
   }
-}
-
-generate "provider" {
-  path      = "provider.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<-HCL
-    provider "aws" { region = "${local.aws_region}" }
-  HCL
-}
-
-generate "backend" {
-  path      = "backend.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<-HCL
-    terraform {
-      backend "s3" {}
-    }
-  HCL
 }
 
 dependency "vpc" {

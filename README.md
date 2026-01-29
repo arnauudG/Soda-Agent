@@ -44,17 +44,17 @@ Soda-Agent/
 │   │               └── README.md   # Addon-specific documentation
 │   └── prod/
 │       └── eu-west-1/              # Same structure as dev
-├── scripts/                        # Deployment and utility scripts
-│   ├── deploy/                    # Deployment scripts
-│   │   └── deploy-collibra-dq.sh # Collibra DQ standalone deployment
-│   ├── destroy/                   # Destruction scripts
+├── scripts/                        # Testing, validation, and utility scripts
+│   ├── test-collibra-dq-deployment.sh  # Comprehensive Collibra DQ testing
+│   ├── test-modules.sh            # Terraform module validation
+│   ├── test-terragrunt.sh         # Terragrunt config validation
 │   ├── utils/                     # Utility scripts
 │   │   └── check-deployment-status.sh
 │   └── README.md                  # Scripts documentation
-├── bootstrap.sh                    # One-time bootstrap script (root entry point)
+├── deploy-bootstrap.sh             # One-time bootstrap script (optional, auto-created by deploy-stack.sh)
 ├── deploy-stack.sh                 # Unified stack deployment (soda-agent | collibra-dq)
-├── destroy-stack.sh                 # Unified stack destruction (soda-agent | collibra-dq)
-├── destroy-bootstrap.sh            # Bootstrap destruction (root entry point)
+├── destroy-stack.sh                # Unified stack destruction (soda-agent | collibra-dq)
+├── destroy-bootstrap.sh           # Bootstrap destruction (use destroy-stack.sh --destroy-bootstrap instead)
 ├── .pre-commit-config.yaml         # Pre-commit hooks configuration
 ├── .gitignore                      # Git ignore rules
 └── README.md                       # This file
@@ -108,11 +108,11 @@ The bootstrap process creates:
 
 ### **Bootstrap Command:**
 ```bash
-./bootstrap.sh <environment>
+./deploy-bootstrap.sh <environment>
 
 # Examples:
-./bootstrap.sh prod    # Bootstrap production environment
-./bootstrap.sh dev     # Bootstrap development environment
+./deploy-bootstrap.sh prod    # Bootstrap production environment
+./deploy-bootstrap.sh dev     # Bootstrap development environment
 ```
 
 ### **Bootstrap Safety Features:**
@@ -135,6 +135,9 @@ The bootstrap process creates:
 # Examples:
 ./destroy-bootstrap.sh dev     # Destroy dev bootstrap resources
 ./destroy-bootstrap.sh prod    # Destroy prod bootstrap resources
+
+# Or use the unified destroy script:
+./destroy-stack.sh <stack> <env> --destroy-bootstrap
 ```
 
 **Safety Features:**
@@ -147,56 +150,73 @@ The bootstrap process creates:
 1. Destroy all stacks: `./destroy-stack.sh <stack> <env>` (for each stack)
 2. Destroy bootstrap: `./destroy-stack.sh <stack> <env> --destroy-bootstrap` (after both stacks destroyed)
 
-## **Deployment Order**
+## **Quick Start**
 
-**CRITICAL**: Infrastructure must be deployed in this specific order due to dependencies:
+### **Deploy a Stack**
+
+The easiest way to deploy is using the unified deployment script:
+
+```bash
+# Deploy Soda Agent stack (EKS-based)
+./deploy-stack.sh soda-agent dev
+
+# Deploy Collibra DQ Standalone stack (EC2-based)
+./deploy-stack.sh collibra-dq dev
+
+# For production
+./deploy-stack.sh soda-agent prod
+./deploy-stack.sh collibra-dq prod
+```
+
+**What happens automatically:**
+- Bootstrap is created if missing
+- Shared resources (VPC, endpoints) are reused if already deployed
+- All dependencies are deployed in the correct order
+- Package upload is automatically optimized (prevents re-uploads)
+
+### **Destroy a Stack**
+
+```bash
+# Destroy Soda Agent stack (keeps shared resources)
+./destroy-stack.sh soda-agent dev
+
+# Destroy Collibra DQ Standalone stack (keeps shared resources)
+./destroy-stack.sh collibra-dq dev
+
+# Destroy bootstrap (only after both stacks are destroyed)
+./destroy-stack.sh soda-agent dev --destroy-bootstrap
+```
+
+## **Manual Deployment (Advanced)**
+
+If you need to deploy components manually, follow this order:
 
 ### **Phase 0: Bootstrap (One-time)**
 ```bash
-./bootstrap.sh <env>  # Run this FIRST for new environments
+./deploy-bootstrap.sh <env>  # Optional - auto-created by deploy-stack.sh
 ```
 
-### **Phase 1: VPC**
-```bash
-cd env/<env>/eu-west-1/network/vpc
-terragrunt apply --auto-approve
-```
+### **Soda Agent Stack Phases:**
+1. VPC (`network/vpc`)
+2. VPC Endpoints (`network/vpc-endpoints`)
+3. Security Groups (`ops/sg-ops`)
+4. EKS Cluster (`eks`)
+5. EC2 Ops Instance (`ops/ec2-ops`)
+6. EKS Access Configuration (`eks/ops-ec2-eks-access`)
+7. Soda Agent (`addons/soda-agent`)
 
-### **Phase 2: VPC Endpoints**
-```bash
-cd ../vpc-endpoints
-terragrunt apply --auto-approve
-```
-
-### **Phase 3: Security Groups (Ops)**
-```bash
-cd ../../ops/sg-ops
-terragrunt apply --auto-approve
-```
-
-### **Phase 4: EKS Cluster**
-```bash
-cd ../../eks
-terragrunt apply --auto-approve
-```
-
-### **Phase 5: EC2 Ops Instance**
-```bash
-cd ../ops/ec2-ops
-terragrunt apply --auto-approve
-```
-
-### **Phase 6: EKS Access Configuration**
-```bash
-cd ../../eks/ops-ec2-eks-access
-terragrunt apply --auto-approve
-```
-
-### **Phase 7: Soda Agent**
-```bash
-cd ../../addons/soda-agent
-terragrunt apply --auto-approve
-```
+### **Collibra DQ Stack Phases:**
+1. Bootstrap (`bootstrap`) - One-time setup
+2. VPC (`network/vpc`) - Reused if exists
+3. VPC Endpoints (`network/vpc-endpoints`) - Reused if exists
+4. Collibra DQ Security Group (`addons/collibra-dq-standalone/sg-collibra-dq`)
+5. RDS Security Group (`database/rds-collibra-dq/sg-rds`) - Depends on Collibra DQ SG
+6. RDS Database (`database/rds-collibra-dq/rds`) - PostgreSQL metastore
+7. Package Upload (`addons/collibra-dq-standalone/package-upload`) - S3 package storage
+8. EC2 Instance (`addons/collibra-dq-standalone`) - Includes PostgreSQL client
+9. ALB Security Group (`addons/collibra-dq-standalone/alb/sg-alb`)
+10. Application Load Balancer (`addons/collibra-dq-standalone/alb`) - HTTP/HTTPS
+11. Target Group Attachment (`addons/collibra-dq-standalone/alb/target-group-attachment`)
 
 ## **Unified Stack Deployment**
 
@@ -298,13 +318,7 @@ Deploy either stack using the unified deployment scripts:
 - EC2-based standalone deployment
 - RDS PostgreSQL metastore
 - Application Load Balancer for web access
-- See [env/dev/eu-west-1/addons/collibra-dq-standalone/README.md](env/dev/eu-west-1/addons/collibra-dq-standalone/README.md) for detailed documentation
-
-
-View installation logs:
-```bash
-sudo tail -f /var/log/collibra-dq-install.log
-```
+- See [Collibra DQ Standalone Stack Deployment](#collibra-dq-standalone-stack-deployment) section below
 
 ## **Environment Variables**
 
@@ -330,7 +344,7 @@ export SODA_LOG_LEVEL="INFO"   # ERROR, WARN, INFO, DEBUG, TRACE
 
 **Solution**: Run bootstrap first:
 ```bash
-./bootstrap.sh <env>
+./deploy-bootstrap.sh <env>
 ```
 
 ### **2. Dependency Errors**
@@ -598,7 +612,7 @@ bootstrap (one-time)
 
 ### **Bootstrap**
 ```bash
-./bootstrap.sh <env>           # Bootstrap new environment
+./deploy-bootstrap.sh <env>           # Bootstrap new environment
 ./destroy-bootstrap.sh <env>   # Destroy bootstrap (after all infrastructure)
 ```
 
@@ -621,8 +635,12 @@ bootstrap (one-time)
 
 ### **Bootstrap**
 ```bash
-./bootstrap.sh <env>           # Bootstrap new environment (one-time)
-./destroy-bootstrap.sh <env>   # Destroy bootstrap (after all stacks destroyed)
+# Bootstrap is automatically created by deploy-stack.sh if missing
+# To manually bootstrap:
+./deploy-bootstrap.sh <env>           # Bootstrap new environment (one-time)
+
+# To destroy bootstrap (only after both stacks are destroyed):
+./destroy-stack.sh <stack> <env> --destroy-bootstrap
 ```
 
 ### **Validate Configuration**
@@ -657,7 +675,7 @@ terragrunt force-unlock <lock-id>
 ### **Most Common Commands**
 ```bash
 # Bootstrap new environment (one-time, automatic if missing)
-./bootstrap.sh prod
+./deploy-bootstrap.sh prod
 
 # Deploy entire stacks
 ./deploy-stack.sh soda-agent prod      # Deploy Soda Agent stack
@@ -677,7 +695,35 @@ find env/ -name "terragrunt.hcl" -exec grep -l "ERROR\|WARN" {} \;
 terragrunt hcl validate --inputs
 ```
 
-### **Environment Variables Setup**
+## **Soda Agent Stack Deployment**
+
+### **Quick Start**
+
+Deploy the entire Soda Agent stack:
+
+```bash
+# Set required environment variables
+export SODA_API_KEY_ID="your-api-key"
+export SODA_API_KEY_SECRET="your-api-secret"
+
+# Deploy Soda Agent stack
+./deploy-stack.sh soda-agent dev
+
+# For production
+./deploy-stack.sh soda-agent prod
+```
+
+**What gets deployed:**
+1. Bootstrap (if missing)
+2. VPC with public/private subnets
+3. VPC Endpoints (S3, SSM, ECR, STS, CloudWatch Logs)
+4. Security Groups (Ops)
+5. EKS Cluster with managed node groups
+6. EC2 Ops Instance
+7. EKS Access Configuration
+8. Soda Agent (Helm chart)
+
+### **Environment Variables**
 
 **Required Variables**:
 ```bash
@@ -704,16 +750,26 @@ export SODA_LOG_FORMAT="raw"   # or "json" (defaults to "raw")
 export SODA_LOG_LEVEL="INFO"   # ERROR, WARN, INFO, DEBUG, or TRACE (defaults to "INFO")
 ```
 
+### **Destroy Soda Agent Stack**
+
+```bash
+# Destroy Soda Agent stack (keeps shared resources)
+./destroy-stack.sh soda-agent dev
+
+# Destroy bootstrap (only after both stacks are destroyed)
+./destroy-stack.sh soda-agent dev --destroy-bootstrap
+```
+
 ## **Getting Help**
 
-1. **Check this README** for common issues and solutions
-2. **Run bootstrap first** for new environments
-3. **Review dependency order** - most issues are related to deployment sequence
+1. **Use unified deployment scripts** - `./deploy-stack.sh` and `./destroy-stack.sh` handle dependencies automatically
+2. **Check this README** for common issues and solutions
+3. **Bootstrap is automatic** - created automatically if missing during deployment
 4. **Check environment variables** - ensure all required variables are set
 5. **Verify AWS resources** - ensure no conflicts with existing infrastructure
 6. **Check Terraform state** - ensure state is consistent
-7. **Use automated scripts** - avoid manual terragrunt commands for complex deployments
-8. **Destroy in correct order** - infrastructure first, then bootstrap
+7. **Package upload optimization** - uploads are automatically optimized (prevents re-uploads)
+8. **Destroy stacks safely** - use `./destroy-stack.sh` which preserves shared resources
 
 ## **Recent Improvements**
 
@@ -1059,61 +1115,142 @@ soda:
 - ✅ Network access: All required FQDNs are accessible (verified via connectivity tests)
 - ✅ Security groups: EKS nodes allow all outbound traffic (0.0.0.0/0)
 
-## **Unified Stack Deployment**
+## **Collibra DQ Standalone Stack Deployment**
 
-This repository supports two deployment stacks:
+### **Quick Start**
 
-1. **Soda Agent Stack**: EKS-based deployment with Soda Agent
-2. **Collibra DQ Standalone Stack**: EC2-based deployment with Collibra DQ
-
-Both stacks share common infrastructure (VPC, VPC Endpoints, Bootstrap) but can be deployed independently.
-
-### **Deploy a Stack**
+Deploy the entire Collibra DQ Standalone stack:
 
 ```bash
-# Deploy Soda Agent stack
-./deploy-stack.sh soda-agent dev
+# Set required environment variables
+export COLLIBRA_DQ_ADMIN_PASSWORD="<secure-password>"
+export COLLIBRA_DQ_LICENSE_KEY="<license-key>"
 
-# Deploy Collibra DQ Standalone stack
+# Optional: Package uploads are automatically optimized (prevents re-uploads)
+# To force a re-upload when updating the package, temporarily set this to false or use terraform taint
+export COLLIBRA_DQ_SKIP_PACKAGE_UPLOAD=true
+
+# Deploy Collibra DQ stack
 ./deploy-stack.sh collibra-dq dev
 
 # For production
-./deploy-stack.sh soda-agent prod
 ./deploy-stack.sh collibra-dq prod
 ```
 
-### **Destroy a Stack**
+**What gets deployed:**
+1. Bootstrap (if missing)
+2. VPC and VPC Endpoints (reused if exists)
+3. Collibra DQ Security Group
+4. RDS Security Group
+5. RDS PostgreSQL Database
+6. Package Upload to S3 (automatically optimized - prevents re-uploads)
+7. EC2 Instance with Collibra DQ (includes PostgreSQL client for testing)
+8. ALB Security Group
+9. Application Load Balancer (HTTP by default, HTTPS when certificate provided)
+10. Target Group Attachment
 
+**Package Upload Optimization:**
+- Package uploads are automatically optimized - Terraform ignores file content changes to prevent unnecessary re-uploads
+- The S3 object resource remains in state and won't be destroyed
+- **To force a re-upload** (e.g., when updating the package file):
+  - Temporarily set `COLLIBRA_DQ_SKIP_PACKAGE_UPLOAD=false` and run apply, or
+  - Use `terraform taint` on the S3 object resource
+- Saves 20+ minutes on redeployments by avoiding large file uploads
+
+**Recent Improvements:**
+- ✅ PostgreSQL client (`psql`) automatically installed for RDS testing
+- ✅ Health check accepts HTTP 200 and 302 (redirect) responses
+- ✅ HTTPS support (conditional - enabled when ACM certificate provided)
+- ✅ Automatic package structure detection (handles `owl/` subdirectory)
+- ✅ Improved error handling and deployment script reliability
+- ✅ RDS connectivity testing helper script
+
+### **Environment Variables**
+
+**Required:**
 ```bash
-# Destroy Soda Agent stack (keeps shared resources)
-./destroy-stack.sh soda-agent dev
-
-# Destroy Collibra DQ Standalone stack (keeps shared resources)
-./destroy-stack.sh collibra-dq dev
-
-# Destroy bootstrap (only if both stacks are destroyed)
-./destroy-stack.sh soda-agent dev --destroy-bootstrap
+export COLLIBRA_DQ_ADMIN_PASSWORD="<secure-password>"  # Must meet password policy
+export COLLIBRA_DQ_LICENSE_KEY="<license-key>"
 ```
 
-### **Bootstrap Handling**
+**Optional:**
+```bash
+export COLLIBRA_DQ_LICENSE_NAME="collibra-partners"     # Defaults to this
+export COLLIBRA_DQ_OWL_BASE="/opt/collibra-dq"          # Defaults to this
+export COLLIBRA_DQ_SPARK_PACKAGE="spark-3.5.6-bin-hadoop3.tgz"
+export COLLIBRA_DQ_PACKAGE_FILENAME="dq-2025.11-SPARK356-JDK17-package-full.tar"
+export COLLIBRA_DQ_SKIP_PACKAGE_UPLOAD="true"           # Optional - uploads are automatically optimized
 
-- **Bootstrap is shared** between both stacks
-- Automatically created if missing during deployment
-- **Not destroyed** by default (preserves state for other stack)
-- Only destroyed with `--destroy-bootstrap` flag (use with caution!)
+# HTTPS Configuration (optional)
+export COLLIBRA_DQ_ACM_CERTIFICATE_ARN="arn:aws:acm:..."  # Enable HTTPS when set
+export COLLIBRA_DQ_DOMAIN_NAME="collibra-dq-dev.example.com"  # Optional domain name
+```
 
-### **Stack Details**
+### **Package File**
 
-**Soda Agent Stack**:
-- EKS Cluster with managed node groups
-- Soda Agent deployed via Helm
-- See [Soda Agent Deployment](#soda-agent-deployment) section for details
+Place the Collibra DQ installation package in:
+```
+packages/collibra-dq/<package-filename>
+```
 
-**Collibra DQ Standalone Stack**:
-- EC2-based standalone deployment
-- RDS PostgreSQL metastore
-- Application Load Balancer for web access
-- See [env/dev/eu-west-1/addons/collibra-dq-standalone/README.md](env/dev/eu-west-1/addons/collibra-dq-standalone/README.md) for detailed documentation
+The deployment script will automatically upload it to S3 if found locally.
+
+### **Destroy Collibra DQ Stack**
+
+```bash
+# Destroy Collibra DQ stack (keeps shared resources)
+./destroy-stack.sh collibra-dq dev
+
+# Destroy bootstrap (only after both stacks are destroyed)
+./destroy-stack.sh collibra-dq dev --destroy-bootstrap
+```
+
+**Warning**: Destroying the stack will delete the RDS database and all Collibra DQ data!
+
+### **Testing and Verification**
+
+After deployment, test all components:
+
+```bash
+# Comprehensive test
+./scripts/test-collibra-dq-deployment.sh dev
+
+# Quick status check
+./scripts/utils/check-deployment-status.sh dev
+
+# Test RDS connection (via SSM)
+cd env/dev/eu-west-1/addons/collibra-dq-standalone
+INSTANCE_ID=$(terragrunt output -raw instance_id)
+aws ssm start-session --target $INSTANCE_ID --region eu-west-1
+# Then run: /usr/local/bin/test-rds-connection.sh
+```
+
+### **HTTPS Configuration**
+
+By default, the ALB uses HTTP for dev/testing. To enable HTTPS:
+
+1. Request an ACM certificate for your domain
+2. Set `COLLIBRA_DQ_ACM_CERTIFICATE_ARN` environment variable
+3. Redeploy the ALB - HTTPS will be automatically enabled
+
+When HTTPS is enabled:
+- HTTPS listener on port 443 with TLS termination
+- HTTP automatically redirects to HTTPS (301 redirect)
+- TLS 1.3 security policy
+
+### **Scaling**
+
+**Vertical Scaling (Scale Up)** - Easiest:
+- Update `instance_type` in `terragrunt.hcl` (e.g., `m5.large` → `m5.xlarge`)
+- Redeploy: `terragrunt apply`
+
+**Horizontal Scaling (Scale Out)** - For HA:
+- Requires Auto Scaling Group implementation
+- See detailed documentation for architecture changes
+
+### **Detailed Documentation**
+
+For detailed Collibra DQ documentation, see: [env/dev/eu-west-1/addons/collibra-dq-standalone/README.md](env/dev/eu-west-1/addons/collibra-dq-standalone/README.md)
 
 
 ## **Upgrading Soda Agent**
@@ -1413,7 +1550,7 @@ If you encounter agent ID issues or need to start completely fresh:
 
 ## **Notes**
 
-- **Bootstrap**: Set to `skip = true` by default. Run `./bootstrap.sh <env>` for new environments.
+- **Bootstrap**: Set to `skip = true` by default. Run `./deploy-bootstrap.sh <env>` for new environments.
 - **State Management**: Uses S3 backend with DynamoDB locking (created by bootstrap).
   - S3 versioning and lifecycle policies for cost optimization
   - DynamoDB point-in-time recovery for disaster recovery

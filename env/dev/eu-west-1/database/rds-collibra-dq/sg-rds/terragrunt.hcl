@@ -38,24 +38,6 @@ remote_state {
   }
 }
 
-generate "provider" {
-  path      = "provider.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<-HCL
-    provider "aws" { region = "${local.aws_region}" }
-  HCL
-}
-
-generate "backend" {
-  path      = "backend.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<-HCL
-    terraform {
-      backend "s3" {}
-    }
-  HCL
-}
-
 dependency "vpc" {
   config_path = "../../../network/vpc"
   mock_outputs = {
@@ -82,11 +64,20 @@ dependency "sg_ops" {
   mock_outputs_allowed_terraform_commands = ["init", "plan"]
 }
 
+dependency "sg_collibra_dq" {
+  config_path = "../../../addons/collibra-dq-standalone/sg-collibra-dq"
+  mock_outputs = {
+    security_group_id = "sg-mock-collibra-dq"
+  }
+  mock_outputs_allowed_terraform_commands = ["init", "plan"]
+}
+
 dependencies {
   paths = [
     "../../../network/vpc",
     "../../../eks",
-    "../../../ops/sg-ops"
+    "../../../ops/sg-ops",
+    "../../../addons/collibra-dq-standalone/sg-collibra-dq"
   ]
 }
 
@@ -96,17 +87,19 @@ terraform {
 
 inputs = {
   name        = "${local.org}-${local.env}-rds-collibra-dq-sg"
-  description = "Security group for Collibra DQ RDS PostgreSQL - allows access from EKS nodes and ops instance"
+  description = "Security group for Collibra DQ RDS PostgreSQL - allows access from EKS nodes, Collibra DQ standalone instance, and ops instance"
   # Get VPC ID from dependency output (not hardcoded)
   vpc_id = dependency.vpc.outputs.vpc_id
 
-  # Allow access from EKS node security group and ops security group
+  # Allow access from EKS node security group, Collibra DQ standalone instance, and ops security group
   # Get security group IDs from dependency outputs (not hardcoded)
   # This allows access from:
   # - EKS nodes (for Collibra DQ pods)
+  # - Collibra DQ standalone EC2 instance (for standalone deployment)
   # - Ops instance (for database management and troubleshooting)
   allowed_security_group_ids = [
     dependency.eks.outputs.node_security_group_id,
+    dependency.sg_collibra_dq.outputs.security_group_id,
     dependency.sg_ops.outputs.security_group_id
   ]
   

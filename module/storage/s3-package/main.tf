@@ -57,7 +57,7 @@ resource "aws_s3_bucket_public_access_block" "package_storage" {
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
-  restrict_public_buckets  = true
+  restrict_public_buckets = true
 }
 
 # Enable S3 Transfer Acceleration for faster uploads (optional)
@@ -69,13 +69,15 @@ resource "aws_s3_bucket_accelerate_configuration" "package_storage" {
 }
 
 # Upload the package file if local file exists
+# Note: When skip_upload_if_exists is true, the resource is still created but source/etag changes are ignored
+# This prevents Terraform from destroying the resource when skip_upload_if_exists is enabled
 resource "aws_s3_object" "package" {
   count = var.local_file_path != "" && fileexists(var.local_file_path) ? 1 : 0
-  
-  bucket       = local.bucket_id
-  key          = var.s3_key
-  source       = var.local_file_path
-  etag         = fileexists(var.local_file_path) ? filemd5(var.local_file_path) : null
+
+  bucket = local.bucket_id
+  key    = var.s3_key
+  source = var.local_file_path
+  etag   = fileexists(var.local_file_path) ? filemd5(var.local_file_path) : null
   # Auto-detect content type based on file extension
   content_type = try(
     endswith(var.local_file_path, ".tar.gz") || endswith(var.local_file_path, ".tgz") ? "application/gzip" : (
@@ -90,6 +92,19 @@ resource "aws_s3_object" "package" {
     Name      = var.package_name
     Component = "package-storage"
   })
+
+  # Lifecycle: Ignore changes to prevent unnecessary re-uploads
+  # Note: Terraform requires lifecycle.ignore_changes to be a static list (no conditionals allowed)
+  # When skip_upload_if_exists is true, we always ignore source/etag to prevent re-uploads
+  # To force a re-upload: temporarily set skip_upload_if_exists=false or use terraform taint
+  lifecycle {
+    ignore_changes = [
+      tags,
+      content_type,
+      source,
+      etag
+    ]
+  }
 
   depends_on = [
     aws_s3_bucket.package_storage,

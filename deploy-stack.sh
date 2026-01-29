@@ -5,6 +5,7 @@
 # Handles bootstrap automatically (checks if exists, creates if needed)
 
 set -e
+set -o pipefail  # Ensure pipeline failures are detected
 
 # Colors
 RED='\033[0;31m'
@@ -46,18 +47,38 @@ if [[ ! "$ENVIRONMENT" =~ ^(dev|prod)$ ]]; then
     exit 1
 fi
 
-BASE_DIR="env/$ENVIRONMENT/eu-west-1"
+# Get script directory (project root)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$SCRIPT_DIR/env/$ENVIRONMENT/eu-west-1"
+
+# Validate environment variables before deployment
+print_status "Validating environment variables..."
+if [ -f "$SCRIPT_DIR/scripts/validate-env.sh" ]; then
+    if ! "$SCRIPT_DIR/scripts/validate-env.sh" "$STACK" "$ENVIRONMENT"; then
+        print_error "Environment validation failed. Please fix the issues above and try again."
+        exit 1
+    fi
+else
+    print_warning "validate-env.sh not found, skipping environment validation"
+fi
 
 # Check if bootstrap exists
 check_bootstrap() {
     local bootstrap_dir="$BASE_DIR/bootstrap"
-    if [ -d "$bootstrap_dir" ]; then
-        cd "$bootstrap_dir" || return 1
-        if terragrunt output -json state_bucket_name >/dev/null 2>&1; then
-            return 0  # Bootstrap exists
-        fi
+    local original_dir=$(pwd)
+    
+    if [ ! -d "$bootstrap_dir" ]; then
+        return 1  # Bootstrap directory doesn't exist
     fi
-    return 1  # Bootstrap doesn't exist
+    
+    cd "$bootstrap_dir" || return 1
+    if terragrunt output -json state_bucket >/dev/null 2>&1; then
+        cd "$original_dir" || cd "$SCRIPT_DIR" || true
+        return 0  # Bootstrap exists and has outputs
+    fi
+    
+    cd "$original_dir" || cd "$SCRIPT_DIR" || true
+    return 1  # Bootstrap directory exists but outputs not available
 }
 
 # Deploy bootstrap if needed
@@ -71,15 +92,30 @@ deploy_bootstrap() {
     print_warning "Bootstrap not found. This is required for both stacks."
     print_status "Deploying bootstrap for $ENVIRONMENT environment..."
     
-    cd "$BASE_DIR/bootstrap" || {
-        print_error "Bootstrap directory not found: $BASE_DIR/bootstrap"
+    if [ ! -f "$SCRIPT_DIR/deploy-bootstrap.sh" ]; then
+        print_error "deploy-bootstrap.sh not found in $SCRIPT_DIR"
+        print_error "Please ensure you're running this script from the project root"
         exit 1
-    }
+    fi
     
-    terragrunt apply --auto-approve
+    # Save current directory before calling deploy-bootstrap.sh
+    local original_dir=$(pwd)
+    
+    # Run bootstrap script (it will change directories)
+    cd "$SCRIPT_DIR" || exit 1
+    "$SCRIPT_DIR/deploy-bootstrap.sh" "$ENVIRONMENT"
+    
+    # Return to original directory (deploy-bootstrap.sh may have changed it)
+    cd "$original_dir" || cd "$SCRIPT_DIR" || true
+    
+    # Verify bootstrap was created
+    if ! check_bootstrap; then
+        print_error "Bootstrap deployment failed - outputs not available"
+        print_error "Bootstrap may have completed but outputs are not accessible"
+        exit 1
+    fi
+    
     print_success "Bootstrap deployed successfully"
-    
-    cd - >/dev/null
 }
 
 # Deploy module helper
@@ -93,10 +129,40 @@ deploy_module() {
         exit 1
     }
     
-    terragrunt apply --auto-approve
-    print_success "$module_name deployed successfully"
+    # Try to apply, if it fails with provider error, initialize and retry
+    local log_file="/tmp/terragrunt-output-$$.log"
+    local apply_exit_code=0
     
-    cd - >/dev/null
+    if ! terragrunt apply --auto-approve 2>&1 | tee "$log_file"; then
+        apply_exit_code=${PIPESTATUS[0]}
+        
+        # Check if it's a provider initialization error
+        if grep -q "Required plugins are not installed\|terraform init" "$log_file"; then
+            print_warning "Provider initialization needed, running terraform init..."
+            terragrunt init -upgrade || true
+            print_status "Retrying deployment..."
+            if ! terragrunt apply --auto-approve 2>&1 | tee "$log_file"; then
+                apply_exit_code=${PIPESTATUS[0]}
+                print_error "Failed to deploy $module_name after initialization"
+                print_error "Check the log file: $log_file"
+                rm -f "$log_file"
+                cd "$SCRIPT_DIR" || true
+                exit 1
+            fi
+        else
+            print_error "Failed to deploy $module_name"
+            print_error "Exit code: $apply_exit_code"
+            print_error "Check the log file: $log_file"
+            rm -f "$log_file"
+            cd "$SCRIPT_DIR" || true
+            exit 1
+        fi
+    fi
+    
+    rm -f "$log_file"
+    
+    print_success "$module_name deployed successfully"
+    cd "$SCRIPT_DIR" || true
 }
 
 # Deploy Soda Agent stack
@@ -151,14 +217,14 @@ deploy_collibra_dq() {
         print_status "VPC Endpoints already exist, skipping..."
     fi
     
-    # Phase 3: RDS Security Group
+    # Phase 3: Collibra DQ Security Group (deploy before RDS SG since RDS SG depends on it)
+    deploy_module "addons/collibra-dq-standalone/sg-collibra-dq" "Collibra DQ Security Group"
+    
+    # Phase 4: RDS Security Group (depends on Collibra DQ SG)
     deploy_module "database/rds-collibra-dq/sg-rds" "RDS Security Group"
     
-    # Phase 4: RDS Database
+    # Phase 5: RDS Database
     deploy_module "database/rds-collibra-dq/rds" "RDS PostgreSQL Database"
-    
-    # Phase 5: Collibra DQ Security Group
-    deploy_module "addons/collibra-dq-standalone/sg-collibra-dq" "Collibra DQ Security Group"
     
     # Phase 6: Package Upload
     deploy_module "addons/collibra-dq-standalone/package-upload" "Package Upload (S3)"
@@ -181,10 +247,11 @@ deploy_collibra_dq() {
 # Check if module exists (has state)
 check_module_exists() {
     local module_path=$1
+    local original_dir=$(pwd)
     cd "$BASE_DIR/$module_path" 2>/dev/null || return 1
     terragrunt output -json >/dev/null 2>&1
     local result=$?
-    cd - >/dev/null
+    cd "$original_dir" || cd "$SCRIPT_DIR" || true
     return $result
 }
 

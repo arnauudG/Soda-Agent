@@ -19,7 +19,7 @@ exec > >(tee -a /var/log/collibra-dq-install.log) 2>&1
 echo "Starting Collibra DQ installation at $(date)"
 VPC_CIDR=$(curl -s http://169.254.169.254/latest/meta-data/network/interfaces/macs/$(curl -s http://169.254.169.254/latest/meta-data/network/interfaces/macs/)/vpc-ipv4-cidr-block)
 VPC_BASE=$(echo "$VPC_CIDR"|cut -d'/' -f1|cut -d'.' -f1-3)
-VPC_RESOLVER="${VPC_BASE}.2"
+VPC_RESOLVER="$${VPC_BASE}.2"
 echo "Waiting for DNS to be ready..."
 for i in {1..30};do
   if getent hosts amazonaws.com >/dev/null 2>&1||nslookup amazonaws.com >/dev/null 2>&1;then
@@ -50,8 +50,12 @@ timeout 120 dnf -y update --setopt=ip_resolve=4 --setopt=fastestmirror=false --s
 MISSING_PACKAGES=""
 for pkg in unzip curl git jq wget tar gzip;do command -v "$pkg" >/dev/null 2>&1||MISSING_PACKAGES="$MISSING_PACKAGES $pkg";done
 [ -n "$MISSING_PACKAGES" ]&&timeout 120 dnf -y install --allowerasing --setopt=ip_resolve=4 --disablerepo=kernel-livepatch $MISSING_PACKAGES||true
+echo "Installing PostgreSQL client (psql) for RDS connectivity testing..."
+timeout 120 dnf -y install --allowerasing --setopt=ip_resolve=4 --disablerepo=kernel-livepatch postgresql15 || timeout 120 dnf -y install --allowerasing --setopt=ip_resolve=4 --disablerepo=kernel-livepatch postgresql || echo "Warning: Could not install PostgreSQL client"||true
+command -v psql >/dev/null 2>&1&&echo "PostgreSQL client installed successfully: $(psql --version)"||echo "Warning: psql command not found after installation"
 
 JAVA_INSTALLED=false
+JAVA_HOME=""
 if command -v java >/dev/null 2>&1&&java -version 2>&1|head -1|grep -qE "version \"(17|1\.17)";then
   JAVA_INSTALLED=true
   JAVA_HOME=$(readlink -f $(which java)|sed "s|/bin/java||")
@@ -79,10 +83,13 @@ if [ "$JAVA_INSTALLED" = false ];then
   }
   [ -z "$JAVA_HOME" ]&&JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
 fi
-export JAVA_HOME PATH=$JAVA_HOME/bin:$PATH
+# Ensure JAVA_HOME is set before using it (fallback to default location)
+[ -z "$JAVA_HOME" ]&&JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
+export JAVA_HOME
+export PATH="$JAVA_HOME/bin:$PATH"
 echo "export JAVA_HOME=$JAVA_HOME">>/etc/profile.d/java.sh
 echo "export PATH=\$JAVA_HOME/bin:\$PATH">>/etc/profile.d/java.sh
-command -v java >/dev/null 2>&1||[ -f "$JAVA_HOME/bin/java" ]&&export PATH=$JAVA_HOME/bin:$PATH
+command -v java >/dev/null 2>&1||[ -f "$JAVA_HOME/bin/java" ]&&export PATH="$JAVA_HOME/bin:$PATH"
 
 mkdir -p "$OWL_BASE";cd "$OWL_BASE"
 if [ -f "$OWL_BASE/$DQ_PACKAGE_FILENAME" ];then
@@ -95,29 +102,42 @@ fi
 echo "$DQ_PACKAGE_FILENAME"|grep -qE "\.zip$"&&unzip -q "$DQ_PACKAGE_FILENAME"||echo "$DQ_PACKAGE_FILENAME"|grep -qE "\.tar\.gz$|\.tgz$|\.tar$"&&tar -xf "$DQ_PACKAGE_FILENAME"||{ echo "ERROR: Unknown package format";exit 1; }
 rm -f "$DQ_PACKAGE_FILENAME"||true
 
-{ printf 'export OWL_BASE=%q\n' "$OWL_BASE";printf 'export OWL_METASTORE_USER=%q\n' "$OWL_METASTORE_USER";printf 'export OWL_METASTORE_PASS=%q\n' "$OWL_METASTORE_PASS";printf 'export SPARK_PACKAGE=%q\n' "$SPARK_PACKAGE";printf 'export DQ_ADMIN_USER_PASSWORD=%q\n' "$DQ_ADMIN_USER_PASSWORD";printf 'export LICENSE_KEY=%q\n' "$LICENSE_KEY"; } > /etc/profile.d/collibra-dq.sh
+# Determine actual installation base (package may extract to owl/ subdirectory)
+ACTUAL_OWL_BASE="$OWL_BASE"
+if [ -d "$OWL_BASE/owl" ];then
+  ACTUAL_OWL_BASE="$OWL_BASE/owl"
+  echo "Package extracted to owl/ subdirectory, using $ACTUAL_OWL_BASE as base"
+fi
+
+{ printf 'export OWL_BASE=%q\n' "$ACTUAL_OWL_BASE";printf 'export OWL_METASTORE_USER=%q\n' "$OWL_METASTORE_USER";printf 'export OWL_METASTORE_PASS=%q\n' "$OWL_METASTORE_PASS";printf 'export POSTGRESQL_HOST=%q\n' "$POSTGRESQL_HOST";printf 'export POSTGRESQL_PORT=%q\n' "$POSTGRESQL_PORT";printf 'export POSTGRESQL_DATABASE=%q\n' "$POSTGRESQL_DATABASE";printf 'export SPARK_PACKAGE=%q\n' "$SPARK_PACKAGE";printf 'export DQ_ADMIN_USER_PASSWORD=%q\n' "$DQ_ADMIN_USER_PASSWORD";printf 'export LICENSE_KEY=%q\n' "$LICENSE_KEY";[ -n "$LICENSE_NAME" ]&&[ "$LICENSE_NAME" != "" ]&&printf 'export LICENSE_NAME=%q\n' "$LICENSE_NAME"; } > /etc/profile.d/collibra-dq.sh
 source /etc/profile.d/collibra-dq.sh
 [ -z "$DQ_ADMIN_USER_PASSWORD" ]||[ "$DQ_ADMIN_USER_PASSWORD" == "" ]&&{ echo "ERROR: DQ_ADMIN_USER_PASSWORD not set";exit 1; }
 export DQ_ADMIN_USER_PASSWORD
 
 PG_SERVER="$POSTGRESQL_HOST:$POSTGRESQL_PORT/$POSTGRESQL_DATABASE"
-SETUP_SCRIPT=$(find "$OWL_BASE" -name "setup.sh" -type f|head -1)
+SETUP_SCRIPT=$(find "$ACTUAL_OWL_BASE" -name "setup.sh" -type f|head -1)
+[ -z "$SETUP_SCRIPT" ]&&SETUP_SCRIPT=$(find "$OWL_BASE" -name "setup.sh" -type f|head -1)
 [ -z "$SETUP_SCRIPT" ]&&{ echo "ERROR: setup.sh not found";exit 1; }
 chmod +x "$SETUP_SCRIPT"
-"$SETUP_SCRIPT" -owlbase="$OWL_BASE" -user="$OWL_METASTORE_USER" -pgpassword="$OWL_METASTORE_PASS" -options=spark,owlweb,owlagent -pgserver="$PG_SERVER"||{ echo "Setup failed";exit 1; }
+# Ensure config directory exists and is writable
+mkdir -p "$ACTUAL_OWL_BASE/config" "$ACTUAL_OWL_BASE/pids" "$ACTUAL_OWL_BASE/log" "$ACTUAL_OWL_BASE/bin"||true
+"$SETUP_SCRIPT" -owlbase="$ACTUAL_OWL_BASE" -user="$OWL_METASTORE_USER" -pgpassword="$OWL_METASTORE_PASS" -options=spark,owlweb,owlagent -pgserver="$PG_SERVER"||{ echo "Setup failed";exit 1; }
 
-OWL_ENV_SCRIPT=$(find "$OWL_BASE" -name "owl-env.sh" -type f|head -1)
+OWL_ENV_SCRIPT=$(find "$ACTUAL_OWL_BASE" -name "owl-env.sh" -type f|head -1)
+[ -z "$OWL_ENV_SCRIPT" ]&&OWL_ENV_SCRIPT=$(find "$OWL_BASE" -name "owl-env.sh" -type f|head -1)
 LICENSE_CONFIGURED=false
 if [ -n "$OWL_ENV_SCRIPT" ]&&[ -n "$LICENSE_KEY" ]&&[ "$LICENSE_KEY" != "" ];then
   cp "$OWL_ENV_SCRIPT" "$OWL_ENV_SCRIPT"".backup"||true
-  grep -q "^export LICENSE_KEY=" "$OWL_ENV_SCRIPT"&&sed -i "s|^export LICENSE_KEY=.*|export LICENSE_KEY=$LICENSE_KEY|" "$OWL_ENV_SCRIPT"||echo "export LICENSE_KEY=$LICENSE_KEY">>"$OWL_ENV_SCRIPT"
-  [ -n "$LICENSE_NAME" ]&&[ "$LICENSE_NAME" != "" ]&&(grep -q "^export LICENSE_NAME=" "$OWL_ENV_SCRIPT"&&sed -i "s|^export LICENSE_NAME=.*|export LICENSE_NAME=$LICENSE_NAME|" "$OWL_ENV_SCRIPT"||echo "export LICENSE_NAME=$LICENSE_NAME">>"$OWL_ENV_SCRIPT")
+  LICENSE_KEY_ESCAPED=$(printf '%q' "$LICENSE_KEY")
+  grep -q "^export LICENSE_KEY=" "$OWL_ENV_SCRIPT"&&sed -i "s|^export LICENSE_KEY=.*|export LICENSE_KEY=$LICENSE_KEY_ESCAPED|" "$OWL_ENV_SCRIPT"||echo "export LICENSE_KEY=$LICENSE_KEY_ESCAPED">>"$OWL_ENV_SCRIPT"
+  [ -n "$LICENSE_NAME" ]&&[ "$LICENSE_NAME" != "" ]&&(LICENSE_NAME_ESCAPED=$(printf '%q' "$LICENSE_NAME");grep -q "^export LICENSE_NAME=" "$OWL_ENV_SCRIPT"&&sed -i "s|^export LICENSE_NAME=.*|export LICENSE_NAME=$LICENSE_NAME_ESCAPED|" "$OWL_ENV_SCRIPT"||echo "export LICENSE_NAME=$LICENSE_NAME_ESCAPED">>"$OWL_ENV_SCRIPT")
   LICENSE_CONFIGURED=true
   source "$OWL_ENV_SCRIPT"||true
 fi
 
 command -v firewall-cmd >/dev/null 2>&1&&(systemctl enable firewalld||true;systemctl start firewalld||true;for p in 9000 9101 8080 8081;do firewall-cmd --permanent --add-port=$p/tcp||true;done;firewall-cmd --reload||true)
-OWL_MANAGE_SCRIPT=$(find "$OWL_BASE" -name "owlmanage.sh" -type f|head -1)
+OWL_MANAGE_SCRIPT=$(find "$ACTUAL_OWL_BASE" -name "owlmanage.sh" -type f|head -1)
+[ -z "$OWL_MANAGE_SCRIPT" ]&&OWL_MANAGE_SCRIPT=$(find "$OWL_BASE" -name "owlmanage.sh" -type f|head -1)
 if [ -n "$OWL_MANAGE_SCRIPT" ];then
   chmod +x "$OWL_MANAGE_SCRIPT"
   [ -n "$OWL_ENV_SCRIPT" ]&&[ -f "$OWL_ENV_SCRIPT" ]&&source "$OWL_ENV_SCRIPT"
@@ -130,8 +150,8 @@ After=network.target
 [Service]
 Type=forking
 User=root
-WorkingDirectory=$OWL_BASE
-Environment="OWL_BASE=$OWL_BASE"
+WorkingDirectory=$ACTUAL_OWL_BASE
+Environment="OWL_BASE=$ACTUAL_OWL_BASE"
 ExecStart=$OWL_MANAGE_SCRIPT start=all
 ExecStop=$OWL_MANAGE_SCRIPT stop=all
 Restart=on-failure
@@ -141,4 +161,35 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload;systemctl enable collibra-dq.service||true
 fi
+
+# Test RDS connectivity if psql is available
+if command -v psql >/dev/null 2>&1&&[ -n "$POSTGRESQL_HOST" ]&&[ "$POSTGRESQL_HOST" != "" ];then
+  echo "Testing RDS PostgreSQL connectivity..."
+  export PGPASSWORD="$OWL_METASTORE_PASS"
+  if timeout 10 psql -h "$POSTGRESQL_HOST" -p "$POSTGRESQL_PORT" -U "$OWL_METASTORE_USER" -d "$POSTGRESQL_DATABASE" -c "SELECT version();" >/dev/null 2>&1;then
+    echo "✓ RDS PostgreSQL connection test successful"
+  else
+    echo "⚠ RDS PostgreSQL connection test failed (this may be normal if security groups are not yet configured)"
+  fi
+  unset PGPASSWORD
+fi
+
+# Create a helper script for testing RDS connection
+cat >/usr/local/bin/test-rds-connection.sh <<'TESTEOF'
+#!/bin/bash
+# Helper script to test RDS PostgreSQL connection
+source /etc/profile.d/collibra-dq.sh 2>/dev/null || true
+if [ -z "$$POSTGRESQL_HOST" ]||[ "$$POSTGRESQL_HOST" == "" ];then
+  echo "ERROR: POSTGRESQL_HOST not set"
+  exit 1
+fi
+export PGPASSWORD="$${OWL_METASTORE_PASS:-$$POSTGRESQL_PASSWORD}"
+echo "Testing connection to: $$POSTGRESQL_HOST:$${POSTGRESQL_PORT:-5432}/$$POSTGRESQL_DATABASE"
+echo "User: $${OWL_METASTORE_USER:-$$POSTGRESQL_USER}"
+psql -h "$$POSTGRESQL_HOST" -p "$${POSTGRESQL_PORT:-5432}" -U "$${OWL_METASTORE_USER:-$$POSTGRESQL_USER}" -d "$${POSTGRESQL_DATABASE:-dqMetastore}" -c "SELECT version();"
+unset PGPASSWORD
+TESTEOF
+chmod +x /usr/local/bin/test-rds-connection.sh
+echo "Created RDS connection test script: /usr/local/bin/test-rds-connection.sh"
+
 echo "Collibra DQ installation completed at $(date)"

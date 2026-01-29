@@ -76,6 +76,8 @@ inputs = {
   local_file_path              = local.package_local_path
   package_name                 = "collibra-dq-package"
   enable_transfer_acceleration = get_env("COLLIBRA_DQ_ENABLE_S3_ACCELERATION", "false") == "true"
+  # Set to true to skip package upload if it already exists in S3 (saves time on redeployments)
+  skip_upload_if_exists        = get_env("COLLIBRA_DQ_SKIP_PACKAGE_UPLOAD", "false") == "true"
   
   tags = local.common_tags
 }

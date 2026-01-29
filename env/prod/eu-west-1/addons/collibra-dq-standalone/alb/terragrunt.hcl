@@ -31,32 +31,33 @@ locals {
   # Build listeners map
   # For prod: HTTPS is recommended. If certificate is provided, enable HTTPS and redirect HTTP.
   # If no certificate, only HTTP listener (not recommended for production)
-  listeners_map = local.acm_certificate_arn != "" ? {
-    https = {
-      port            = 443
-      protocol        = "HTTPS"
-      certificate_arn = local.acm_certificate_arn
-      ssl_policy      = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-      forward = {
-        target_group_key = "collibra-dq"
-      }
+listeners_map = local.acm_certificate_arn != "" ? {
+  https = {
+    port            = 443
+    protocol        = "HTTPS"
+    certificate_arn = local.acm_certificate_arn
+    ssl_policy      = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+    forward = {
+      target_group_key = "collibra-dq"
     }
-    http = {
-      port     = 80
-      protocol = "HTTP"
-      redirect = {
-        port        = "443"
-        protocol    = "HTTPS"
-        status_code = "HTTP_301"
-      }
+  }
+  http = {
+    port     = 80
+    protocol = "HTTP"
+    redirect = {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
     }
-  } : {
-    http = {
-      port     = 80
-      protocol = "HTTP"
-      forward = {
-        target_group_key = "collibra-dq"
-      }
+    forward = null
+  }
+} : {
+  http = {
+    port     = 80
+    protocol = "HTTP"
+    redirect = null
+    forward = {
+      target_group_key = "collibra-dq"
     }
   }
 }
@@ -152,7 +153,7 @@ inputs = {
         enabled             = true
         healthy_threshold   = 2
         interval            = 30
-        matcher             = "200"
+        matcher             = "200,302"  # Accept both 200 (OK) and 302 (redirect) as healthy
         path                = "/"
         port                = "traffic-port"
         protocol            = "HTTP"

@@ -1,5 +1,5 @@
 # env/<env>/<region>/addons/collibra-dq-standalone/alb/terragrunt.hcl
-# Application Load Balancer for Collibra DQ Web Interface
+# Application Load Balancer for Collibra DQ Web Interface (DEV / HTTP-only)
 
 # Note: We don't use include here to avoid nested includes
 # Instead, we read the env-level root.hcl directly
@@ -7,32 +7,22 @@ locals {
   parent = read_terragrunt_config("../../../../root.hcl")
   org    = local.parent.locals.org
   env    = local.parent.locals.env
-  
-  path_parts = split("/", get_terragrunt_dir())
+
+  path_parts   = split("/", get_terragrunt_dir())
   region_index = length(local.path_parts) - 4
   aws_region   = local.path_parts[local.region_index]
-  
+
   common_tags = merge(local.parent.locals.common_tags, {
     Region = local.aws_region
   })
-  
+
   modules_root = local.parent.locals.modules_root
-  
+
   state_bucket = "${get_aws_account_id()}-${local.org}-${local.env}-tfstate-${local.aws_region}"
   lock_table   = "${get_aws_account_id()}-${local.org}-${local.env}-tf-locks"
-  
-  # ACM certificate ARN (can be set via environment variable or created separately)
-  # For dev: can use self-signed or request a certificate via ACM
-  acm_certificate_arn = get_env("COLLIBRA_DQ_ACM_CERTIFICATE_ARN", "")
-  
-  # Domain name for the certificate (optional)
-  domain_name = get_env("COLLIBRA_DQ_DOMAIN_NAME", "")
-  
-  # Build listeners map
-  # For now: HTTP only (dev/testing)
-  # To enable HTTPS: Set COLLIBRA_DQ_ACM_CERTIFICATE_ARN and update this configuration
-  # Note: Terraform conditionals require consistent types, so HTTPS support requires
-  #       modifying this configuration manually or using a more complex merge approach
+
+  # DEV setup: HTTP only
+  # HTTPS / ACM will be introduced later when domain & certificate exist
   listeners_map = {
     http = {
       port     = 80
@@ -42,33 +32,6 @@ locals {
       }
     }
   }
-  
-  # TODO: Add HTTPS listener when certificate is available
-  # When COLLIBRA_DQ_ACM_CERTIFICATE_ARN is set, update listeners_map to:
-  # listeners_map = {
-  #   https = {
-  #     port            = 443
-  #     protocol        = "HTTPS"
-  #     certificate_arn = local.acm_certificate_arn
-  #     ssl_policy      = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-  #     default_action = {
-  #       type             = "forward"
-  #       target_group_key = "collibra-dq"
-  #     }
-  #   }
-  #   http = {
-  #     port     = 80
-  #     protocol = "HTTP"
-  #     default_action = {
-  #       type = "redirect"
-  #       redirect = {
-  #         port        = "443"
-  #         protocol    = "HTTPS"
-  #         status_code = "HTTP_301"
-  #       }
-  #     }
-  #   }
-  # }
 }
 
 remote_state {
@@ -80,24 +43,6 @@ remote_state {
     dynamodb_table = local.lock_table
     encrypt        = true
   }
-}
-
-generate "provider" {
-  path      = "provider.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<-HCL
-    provider "aws" { region = "${local.aws_region}" }
-  HCL
-}
-
-generate "backend" {
-  path      = "backend.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<-HCL
-    terraform {
-      backend "s3" {}
-    }
-  HCL
 }
 
 dependency "vpc" {
@@ -125,36 +70,28 @@ dependencies {
 }
 
 # Note: Target group attachment is handled separately in ./target-group-attachment/
-
 terraform {
   source = "${local.modules_root}/network/alb/application"
 }
 
-# Note: Module outputs are available via dependency.alb.outputs.*
-# The module already provides: load_balancer_dns_name, load_balancer_arn, 
-# load_balancer_zone_id, target_group_arns, etc.
-
 inputs = {
-  name = "${local.org}-${local.env}-collibra-dq-alb"
-  vpc_id = dependency.vpc.outputs.vpc_id
+  name     = "${local.org}-${local.env}-collibra-dq-alb"
+  vpc_id  = dependency.vpc.outputs.vpc_id
   subnets = dependency.vpc.outputs.public_subnets
-  internal = false  # Internet-facing ALB
-  
-  enable_deletion_protection = false  # Dev: allow deletion
-  enable_http2 = true
-  enable_cross_zone_load_balancing = true
-  
+
+  internal = false  # Internet-facing ALB (dev)
+
+  enable_deletion_protection        = false
+  enable_http2                     = true
+  enable_cross_zone_load_balancing  = true
+
   security_groups = [dependency.sg_alb.outputs.security_group_id]
-  
-  enable_logging = false  # Dev: disable to save costs
-  
-  # Listeners configuration
-  # If ACM certificate is provided, enable HTTPS listener and redirect HTTP to HTTPS
-  # If no certificate, only HTTP listener (for dev/testing)
+
+  enable_logging = false  # Dev: disabled to reduce cost/noise
+
+  # HTTP-only listener (dev)
   listeners = local.listeners_map
-  
-  # Target group for Collibra DQ instance
-  # Note: v9.0.0 does not support targets array - targets attached separately
+
   target_groups = {
     collibra-dq = {
       name                 = "${local.org}-${local.env}-collibra-dq-tg"
@@ -162,22 +99,22 @@ inputs = {
       backend_port         = 9000
       target_type          = "instance"
       deregistration_delay = 30
-      create_attachment    = false  # Disable module-managed attachments (attach separately)
+      create_attachment    = false
+
       health_check = {
         enabled             = true
         healthy_threshold   = 2
         interval            = 30
-        matcher             = "200"
+        matcher             = "200,302"
         path                = "/"
         port                = "traffic-port"
         protocol            = "HTTP"
         timeout             = 5
         unhealthy_threshold = 3
       }
-      # Targets attached via target-group-attachment module (separate terragrunt config)
     }
   }
-  
+
   tags = merge(local.common_tags, {
     Component = "alb"
     Name      = "${local.org}-${local.env}-collibra-dq-alb"

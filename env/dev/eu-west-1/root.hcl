@@ -1,36 +1,44 @@
 # env/dev/eu-west-1/root.hcl
 # Region-specific configuration for dev/eu-west-1
-# Includes environment-level config from ../root.hcl
+# This file is included by module-level terragrunt.hcl files
+#
+# Hierarchy:
+#   env/common.hcl          - Provider and backend generate blocks
+#   env/dev/root.hcl        - Environment-level settings (org, env, modules_root)
+#   env/dev/eu-west-1/root.hcl  - This file (region-level, remote_state)
 
 include "env" {
   path = "../root.hcl"
 }
 
+# Include common generate blocks (provider, backend)
+include "common" {
+  path   = find_in_parent_folders("common.hcl")
+  expose = true
+}
+
 locals {
-  # This file is at env/dev/eu-west-1/root.hcl, parent is at env/dev/root.hcl
-  # The include block uses "../root.hcl" which is relative to this file's location
-  # For read_terragrunt_config, paths are relative to the calling terragrunt.hcl
-  # get_parent_terragrunt_dir() returns the parent of the calling terragrunt.hcl
-  # We need to go up one more level from there to get to env level
-  # Construct path: from calling dir, find "eu-west-1", go up one level
-  calling_dir = get_terragrunt_dir()
-  path_parts = split("/", local.calling_dir)
-  region_idx = index(local.path_parts, "eu-west-1")
-  # If region found, slice to env level; otherwise try going up from parent
-  env_dir = local.region_idx >= 0 ? join("/", slice(local.path_parts, 0, local.region_idx)) : "${get_parent_terragrunt_dir()}/.."
-  parent = read_terragrunt_config("${local.env_dir}/root.hcl")
-  org           = local.parent.locals.org
-  env           = local.parent.locals.env
-  aws_region    = "eu-west-1"  # Region is defined at the region level
+  # Read parent config for org, env, and other settings
+  parent = read_terragrunt_config("../root.hcl")
+
+  org        = local.parent.locals.org
+  env        = local.parent.locals.env
+  aws_region = "eu-west-1"
+
+  # Common tags from parent, with Region added
   common_tags = merge(local.parent.locals.common_tags, {
     Region = local.aws_region
   })
+
+  # Modules root path
+  modules_root = local.parent.locals.modules_root
 
   # State bucket and lock table names
   state_bucket = "${get_aws_account_id()}-${local.org}-${local.env}-tfstate-${local.aws_region}"
   lock_table   = "${get_aws_account_id()}-${local.org}-${local.env}-tf-locks"
 }
 
+# Remote state configuration - inherited by all modules that include this file
 remote_state {
   backend = "s3"
   config = {
@@ -42,28 +50,11 @@ remote_state {
   }
 }
 
-generate "provider" {
-  path      = "provider.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<-HCL
-    provider "aws" { region = "${local.aws_region}" }
-  HCL
-}
-
-generate "backend" {
-  path      = "backend.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<-HCL
-    terraform {
-      backend "s3" {}
-    }
-  HCL
-}
-
 inputs = merge(
   local.parent.inputs,
   {
-    aws_region  = local.aws_region
-    common_tags = local.common_tags
+    aws_region   = local.aws_region
+    common_tags  = local.common_tags
+    modules_root = local.modules_root
   }
 )

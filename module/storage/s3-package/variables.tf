@@ -37,3 +37,9 @@ variable "enable_transfer_acceleration" {
   type        = bool
   default     = false
 }
+
+variable "skip_upload_if_exists" {
+  description = "Skip package upload if the file already exists in S3 (useful to avoid re-uploading large files). When true, the resource lifecycle ignores source/etag changes, preventing re-uploads. To force a re-upload, temporarily set this to false."
+  type        = bool
+  default     = false
+}

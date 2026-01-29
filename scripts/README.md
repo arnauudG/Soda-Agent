@@ -1,52 +1,102 @@
 # Scripts Directory
 
-This directory contains deployment, destruction, and utility scripts organized by purpose.
+This directory contains testing, validation, and utility scripts. Deployment and destruction are handled by unified scripts in the project root.
 
 ## Structure
 
 ```
 scripts/
-├── deploy/              # Deployment scripts
-│   ├── deploy-collibra-dq.sh
-│   └── ...
-├── destroy/             # Destruction scripts
-│   └── ...
-├── utils/               # Utility and helper scripts
-│   ├── check-deployment-status.sh
-│   └── ...
-└── README.md           # This file
+├── test-collibra-dq-deployment.sh  # Comprehensive testing for Collibra DQ
+├── test-modules.sh                  # Validates Terraform modules
+├── test-terragrunt.sh               # Validates Terragrunt configurations
+├── utils/                            # Utility scripts
+│   └── check-deployment-status.sh   # Quick deployment status check
+└── README.md                         # This file
 ```
 
 ## Usage
 
-### Deployment Scripts
+### Testing Scripts
 
-**Collibra DQ Standalone**:
+**Comprehensive Collibra DQ Testing**:
 ```bash
-./scripts/deploy/deploy-collibra-dq.sh <env>
+./scripts/test-collibra-dq-deployment.sh [env] [region]
+# Example: ./scripts/test-collibra-dq-deployment.sh dev eu-west-1
 ```
 
-### Destruction Scripts
+Tests all components:
+- EC2 instance status
+- Collibra DQ service status
+- Health endpoints
+- ALB and target group health
+- RDS connectivity
 
-**Collibra DQ Standalone**:
+**Module Validation**:
 ```bash
-./scripts/destroy/destroy-collibra-dq.sh <env>
+./scripts/test-modules.sh
+```
+
+**Terragrunt Validation**:
+```bash
+./scripts/test-terragrunt.sh [env] [region]
+# Example: ./scripts/test-terragrunt.sh dev eu-west-1
 ```
 
 ### Utility Scripts
 
-**Check Deployment Status**:
+**Quick Deployment Status**:
 ```bash
-./scripts/utils/check-deployment-status.sh <env>
+./scripts/utils/check-deployment-status.sh [env]
+# Example: ./scripts/utils/check-deployment-status.sh dev
 ```
 
-## Root-Level Scripts
+## Root-Level Scripts (Primary Entry Points)
 
-The following scripts remain in the root directory for convenience:
+All deployment and destruction is handled by unified scripts in the project root:
 
-- `bootstrap.sh` - One-time environment bootstrap
-- `deploy.sh` - Main Soda Agent deployment
-- `destroy.sh` - Main Soda Agent destruction
-- `destroy-bootstrap.sh` - Bootstrap destruction
+**Deployment**:
+```bash
+# Deploy Soda Agent stack
+./deploy-stack.sh soda-agent <env>
 
-These are the primary entry points and are kept in root for easy access.
+# Deploy Collibra DQ stack
+./deploy-stack.sh collibra-dq <env>
+```
+
+**Destruction**:
+```bash
+# Destroy Soda Agent stack
+./destroy-stack.sh soda-agent <env>
+
+# Destroy Collibra DQ stack
+./destroy-stack.sh collibra-dq <env>
+```
+
+**Bootstrap**:
+```bash
+# Bootstrap environment (one-time)
+./deploy-bootstrap.sh <env>
+
+# Destroy bootstrap (after all stacks destroyed)
+./destroy-bootstrap.sh <env>
+```
+
+These unified scripts handle:
+- Dependency ordering
+- Error handling
+- Automatic retries
+- Bootstrap management
+- Resource reuse (VPC, endpoints)
+
+## Migration from Old Scripts
+
+If you were using old scripts, here are the equivalents:
+
+| Old Script | New Command |
+|------------|-------------|
+| `scripts/deploy/deploy-collibra-dq.sh` | `./deploy-stack.sh collibra-dq <env>` |
+| `scripts/destroy/destroy-collibra-dq.sh` | `./destroy-stack.sh collibra-dq <env>` |
+| `scripts/test-collibra-dq.sh` | `./scripts/test-collibra-dq-deployment.sh <env>` |
+| `scripts/test-collibra-dq-quick.sh` | `./scripts/test-collibra-dq-deployment.sh <env>` |
+| `scripts/check-collibra-dq-health.sh` | `./scripts/test-collibra-dq-deployment.sh <env>` |
+| `scripts/diagnose-collibra-dq.sh` | `./scripts/test-collibra-dq-deployment.sh <env>` |
