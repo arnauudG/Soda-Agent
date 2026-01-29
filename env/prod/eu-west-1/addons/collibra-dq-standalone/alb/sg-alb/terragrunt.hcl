@@ -35,24 +35,6 @@ remote_state {
   }
 }
 
-generate "provider" {
-  path      = "provider.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<-HCL
-    provider "aws" { region = "${local.aws_region}" }
-  HCL
-}
-
-generate "backend" {
-  path      = "backend.tf"
-  if_exists = "overwrite_terragrunt"
-  contents  = <<-HCL
-    terraform {
-      backend "s3" {}
-    }
-  HCL
-}
-
 dependency "vpc" {
   config_path = "../../../../network/vpc"
   mock_outputs = {
