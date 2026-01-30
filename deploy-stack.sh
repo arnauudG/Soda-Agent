@@ -44,12 +44,11 @@ AWS Credentials (one of):
   AWS_SECRET_ACCESS_KEY - AWS secret access key
 
 Examples:
-  # Deploy soda-agent (dev)
+  # Deploy soda-agent (set TF_VAR_*, AWS creds, add-on secrets in env first)
   export TF_VAR_environment=dev TF_VAR_region=eu-west-1
-  source scripts/set-env.sh
   $0 soda-agent
 
-  # Deploy collibra-dq (prod)
+  # Deploy collibra-dq
   $0 collibra-dq
 EOF
     exit 1
@@ -135,15 +134,6 @@ print_status "Region:      $REGION"
 print_status "AWS Account: $AWS_ACCOUNT_ID"
 print_status "Base Dir:    $BASE_DIR"
 print_status "=================================================="
-
-# Validate environment variables for specific stacks
-if [ -f "$SCRIPT_DIR/scripts/validate-env.sh" ]; then
-    print_status "Validating stack-specific environment variables..."
-    if ! "$SCRIPT_DIR/scripts/validate-env.sh" "$STACK" "$ENVIRONMENT" "$SKIP_ADDONS"; then
-        print_error "Environment validation failed. Please fix the issues above and try again."
-        exit 1
-    fi
-fi
 
 # Check if bootstrap exists
 check_bootstrap_state() {

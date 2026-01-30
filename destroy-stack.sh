@@ -47,8 +47,7 @@ AWS Credentials (one of):
   AWS_SECRET_ACCESS_KEY - AWS secret access key
 
 Examples:
-  # Destroy soda-agent (keeps bootstrap)
-  source scripts/set-env.sh
+  # Destroy soda-agent (set env vars first)
   echo "yes" | $0 soda-agent
 
   # Destroy collibra-dq and bootstrap
@@ -150,15 +149,6 @@ print_status "Region:      $REGION"
 print_status "AWS Account: $AWS_ACCOUNT_ID"
 print_status "Base Dir:    $BASE_DIR"
 print_status "=================================================="
-
-# Validate environment variables (stack-aware). Destroy does not need add-on secrets.
-if [ -f "$SCRIPT_DIR/scripts/validate-env.sh" ]; then
-    print_status "Validating stack-specific environment variables..."
-    if ! "$SCRIPT_DIR/scripts/validate-env.sh" "$STACK" "$ENVIRONMENT" "yes"; then
-        print_error "Environment validation failed. Please fix the issues above and try again."
-        exit 1
-    fi
-fi
 
 # Check if module exists
 check_module_exists() {

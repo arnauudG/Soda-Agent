@@ -18,21 +18,14 @@ Install these tools locally (and in CI if you run validation there):
 - Helm (optional but useful for debugging; Terraform uses the Helm provider)
 - jq (optional; some helper scripts use it)
 
-## Environment setup
+## Environment variables
 
-Scripts use whatever environment variables are **already set in your shell**. They do not load any file automatically.
+Deploy and destroy scripts use **environment variables** from your shell or CI. Set them before running:
 
-1. Copy the example and add your values:
-   ```bash
-   cp scripts/set-env.example.sh scripts/set-env.sh
-   # Edit scripts/set-env.sh (AWS keys, Collibra DQ password/license, etc.)
-   ```
-2. In the **same** shell where you run deploy/destroy, source it first:
-   ```bash
-   source scripts/set-env.sh
-   ./deploy-stack.sh collibra-dq
-   ```
-   If you use access keys (not a profile), ensure `unset AWS_PROFILE` in `set-env.sh` or in the shell so the AWS CLI uses your keys.
+- **Required:** `TF_VAR_environment`, `TF_VAR_region`, and AWS credentials (`AWS_PROFILE` or `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`)
+- **Add-on:** For soda-agent: `SODA_API_KEY_ID`, `SODA_API_KEY_SECRET`. For collibra-dq: `COLLIBRA_DQ_ADMIN_PASSWORD`, `COLLIBRA_DQ_LICENSE_KEY`
+
+When using access keys (not a profile), ensure `AWS_PROFILE` is unset so the AWS CLI uses your keys.
 
 ## What gets deployed
 
@@ -79,8 +72,7 @@ DQ-Infrastructures/
 │           ├── soda-agent/
 │           └── collibra-dq-standalone/
 ├── module/                         # Terraform modules used by the live configs
-├── scripts/                        # Validation + utilities
-│   └── set-env.example.sh          # Env template: copy to set-env.sh, edit, then source before deploy/destroy
+├── scripts/                        # Validation + test utilities
 ├── packages/                       # Large artifacts (e.g., Collibra DQ package) are git-ignored
 ├── deploy-stack.sh                 # Deploy a stack (soda-agent | collibra-dq)
 ├── destroy-stack.sh                # Destroy a stack
@@ -91,7 +83,7 @@ DQ-Infrastructures/
 
 Entry points:
 
-- `deploy-stack.sh <stack>` — deploy soda-agent or collibra-dq (source `scripts/set-env.sh` first)
+- `deploy-stack.sh <stack>` — deploy soda-agent or collibra-dq (set env vars first)
 - `destroy-stack.sh <stack>` — destroy a stack
 - `deploy-bootstrap.sh` / `destroy-bootstrap.sh` — bootstrap only
 
@@ -160,7 +152,7 @@ Deploys the selected stack including its add-ons.
 
 ## Environment variables (explicit)
 
-These are the variables referenced by `deploy-stack.sh`, `destroy-stack.sh`, and `scripts/validate-env.sh`.
+These are the variables used by `deploy-stack.sh` and `destroy-stack.sh` (set in your shell or CI).
 
 ### Required for all deployments (local and CI/CD)
 
@@ -214,14 +206,18 @@ Optional (read by Terragrunt configs under `env/stack/addons/collibra-dq-standal
 Database optional:
 - `COLLIBRA_DQ_RDS_PASSWORD` (if unset, the RDS module generates a random password)
 
-For a full template with all variables, copy and edit `scripts/set-env.example.sh` → `scripts/set-env.sh`, then `source scripts/set-env.sh` before running deploy/destroy.
+Set these in your shell or in CI secrets before running deploy/destroy.
 
 ## Usage
 
 ### Quick start
 
 ```bash
-source scripts/set-env.sh   # set TF_VAR_*, AWS credentials, add-on secrets in this shell
+export TF_VAR_environment=dev
+export TF_VAR_region=eu-west-1
+export AWS_PROFILE=your-profile   # or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
+# Add-on secrets if needed: SODA_*, COLLIBRA_DQ_*
+
 ./deploy-stack.sh soda-agent
 # or
 ./deploy-stack.sh collibra-dq
@@ -230,7 +226,7 @@ source scripts/set-env.sh   # set TF_VAR_*, AWS credentials, add-on secrets in t
 ### Destroy
 
 ```bash
-source scripts/set-env.sh
+# Same env vars in shell
 echo "yes" | ./destroy-stack.sh collibra-dq
 # or
 echo "yes" | ./destroy-stack.sh soda-agent
@@ -278,10 +274,10 @@ Details: `env/stack/addons/collibra-dq-standalone/README.md`
 
 ## Scripts
 
-- `scripts/set-env.example.sh` — copy to `set-env.sh`, edit, then `source` before deploy/destroy
-- `scripts/validate-env.sh` — used by deploy/destroy to check env vars and AWS credentials
-- `scripts/test-modules.sh`, `scripts/test-terragrunt.sh` — Terraform/Terragrunt validation
-- `scripts/test-collibra-dq-deployment.sh`, `scripts/utils/check-deployment-status.sh` — deployment checks
+- `scripts/test-modules.sh` — Terraform module validation
+- `scripts/test-terragrunt.sh` — Terragrunt config validation (stack-first)
+- `scripts/test-collibra-dq-deployment.sh` — end-to-end collibra-dq checks (requires deployed infra)
+- `scripts/utils/check-deployment-status.sh` — quick deployment status
 
 See `scripts/README.md` for usage.
 
@@ -301,7 +297,7 @@ If you add a deploy workflow later, treat it like production automation:
 
 ## Troubleshooting
 
-- **AWS credentials not configured or invalid**: Run deploy/destroy in the **same** shell where you ran `source scripts/set-env.sh`. If using access keys, ensure `AWS_PROFILE` is unset (e.g. `unset AWS_PROFILE` in `set-env.sh` or before sourcing).
+- **AWS credentials not configured or invalid**: Ensure `TF_VAR_environment`, `TF_VAR_region`, and AWS credentials are set in the same shell (or CI) where you run deploy/destroy. When using access keys, unset `AWS_PROFILE` so the CLI uses the keys.
 - **S3 bucket / DynamoDB table already exist**: Bootstrap import will attach existing resources to state.
 - **Account mismatch**: Set `TG_EXPECTED_ACCOUNT_ID` (recommended for CI/CD) instead of committing an account ID.
 - **Missing add-on secrets during core-only deploy**: Use `--skip-addons` to avoid validating add-on secrets.

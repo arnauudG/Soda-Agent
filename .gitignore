@@ -52,8 +52,6 @@ Thumbs.db
 .env
 .env.local
 *.env
-scripts/set-env.sh
-
 # Logs
 *.log
 
