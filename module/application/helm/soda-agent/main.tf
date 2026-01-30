@@ -120,12 +120,12 @@ resource "helm_release" "soda_agent" {
     value = var.cloud_endpoint
   }
 
-  set {
+  set_sensitive {
     name  = "soda.apikey.id"
     value = var.api_key_id
   }
 
-  set {
+  set_sensitive {
     name  = "soda.apikey.secret"
     value = var.api_key_secret
   }

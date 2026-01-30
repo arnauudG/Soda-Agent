@@ -1,6 +1,6 @@
 # Security Group Modules Overview
 
-This directory contains security group modules for the Soda-Agent infrastructure.
+This directory contains security group modules used by the stacks (ops, RDS, add-ons).
 
 ## Module Structure
 

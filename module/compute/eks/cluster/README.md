@@ -47,7 +47,7 @@ module "eks" {
 
   tags = {
     Environment = "dev"
-    Project     = "Soda-Agent"
+    Project     = "DQ-Infrastructures"
   }
 }
 ```
@@ -127,7 +127,7 @@ module "eks" {
 ## Dependent Modules
 
 - `security/iam/ops-eks-access` - Configures RBAC for ops EC2
-- `application/helm/soda-agent` - Deploys Soda Agent to the cluster
+- `application/helm/soda-agent` - soda-agent add-on (Helm)
 
 ## Node Group Configuration Examples
 

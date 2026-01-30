@@ -88,6 +88,8 @@ Set `cloud_endpoint` based on your Soda Cloud region.
 - Agent runs with minimal permissions in dedicated namespace
 - Use IRSA for AWS data source access (not yet implemented)
 
+Note: Terraform state should still be treated as sensitive. Even with `set_sensitive` and sensitive variables, secrets can end up in state and must not be shared.
+
 ## Cost Implications
 
 The Soda Agent itself runs on your EKS cluster nodes:

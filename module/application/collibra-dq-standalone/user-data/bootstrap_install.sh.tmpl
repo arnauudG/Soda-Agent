@@ -1,0 +1,11 @@
+#!/bin/bash
+# Bootstrap: fetch full install script from S3 and run (keeps user data under 16KB)
+set -e
+REGION='${region}'
+BUCKET='${bucket}'
+KEY='${key}'
+exec > >(tee -a /var/log/collibra-dq-install.log) 2>&1
+echo "Bootstrap: downloading install script from s3://$BUCKET/$KEY"
+aws s3 cp "s3://$BUCKET/$KEY" /tmp/install_collibra_dq.sh --region "$REGION"
+chmod +x /tmp/install_collibra_dq.sh
+/tmp/install_collibra_dq.sh

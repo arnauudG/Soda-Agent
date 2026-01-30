@@ -1,5 +1,5 @@
 #!/bin/bash
-# test-terragrunt.sh - Validate Terragrunt configs with mock outputs
+# test-terragrunt.sh - Validate Terragrunt live configs under env/stack using mock outputs where configured.
 
 set -e
 
@@ -8,45 +8,63 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
-ENV=${1:-dev}
-REGION=${2:-eu-west-1}
+ENVIRONMENT=${1:-${TF_VAR_environment:-dev}}
+REGION=${2:-${TF_VAR_region:-eu-west-1}}
 
-if [ ! -d "env/$ENV/$REGION" ]; then
-    echo "❌ Environment not found: env/$ENV/$REGION"
+export TF_VAR_environment="$ENVIRONMENT"
+export TF_VAR_region="$REGION"
+
+BASE_DIR="env/stack"
+
+if [ ! -d "$BASE_DIR" ]; then
+    echo "❌ Stack directory not found: $BASE_DIR"
     exit 1
 fi
 
-echo "🔍 Validating Terragrunt configs for $ENV/$REGION..."
+echo "🔍 Validating Terragrunt configs for env=$ENVIRONMENT region=$REGION (stack-first)"
 echo ""
 
-# Test each phase in dependency order
+# Test phases in a sensible dependency order.
 phases=(
+    "bootstrap"
+
     "network/vpc"
     "network/vpc-endpoints"
+
     "ops/sg-ops"
     "eks"
     "ops/ec2-ops"
     "eks/ops-ec2-eks-access"
+
     "addons/soda-agent"
+
+    "addons/collibra-dq-standalone/alb/sg-alb"
+    "addons/collibra-dq-standalone/sg-collibra-dq"
+    "database/rds-collibra-dq/sg-rds"
+    "database/rds-collibra-dq/rds"
+    "addons/collibra-dq-standalone/package-upload"
+    "addons/collibra-dq-standalone"
+    "addons/collibra-dq-standalone/alb"
+    "addons/collibra-dq-standalone/alb/target-group-attachment"
 )
 
 VALIDATION_FAILED=0
 
 for phase in "${phases[@]}"; do
-    phase_path="env/$ENV/$REGION/$phase"
-    
+    phase_path="$BASE_DIR/$phase"
+
     if [ ! -f "$phase_path/terragrunt.hcl" ]; then
         echo "⚠️  Skipping $phase (terragrunt.hcl not found)"
         continue
     fi
-    
+
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "📋 Validating: $phase"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    
+
     cd "$phase_path"
-    
-    # Initialize Terragrunt (uses mock outputs)
+
+    # Initialize Terragrunt (dependency mocks should make init/plan possible without deployed deps).
     if ! terragrunt init -input=false > /dev/null 2>&1; then
         echo "❌ Failed to initialize: $phase"
         terragrunt init
@@ -54,8 +72,7 @@ for phase in "${phases[@]}"; do
         cd "$PROJECT_ROOT"
         continue
     fi
-    
-    # Validate Terragrunt config
+
     if ! terragrunt validate > /dev/null 2>&1; then
         echo "❌ Validation failed: $phase"
         terragrunt validate
@@ -63,15 +80,14 @@ for phase in "${phases[@]}"; do
     else
         echo "✅ Config valid"
     fi
-    
-    # Plan with mock outputs (no AWS calls)
+
+    # Plan with mock outputs (may still fail if a module requires real provider/AWS access).
     if ! terragrunt plan -input=false -out=/dev/null > /dev/null 2>&1; then
-        echo "⚠️  Plan failed (may be due to missing dependencies)"
-        echo "   This is OK if dependencies haven't been deployed yet"
+        echo "⚠️  Plan failed (may be due to missing dependencies or missing provider credentials)"
     else
         echo "✅ Plan successful"
     fi
-    
+
     cd "$PROJECT_ROOT"
     echo ""
 done

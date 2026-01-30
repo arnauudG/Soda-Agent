@@ -9,6 +9,8 @@ This module creates a PostgreSQL RDS instance configured for Collibra DQ. It inc
 - PostgreSQL database instance
 - DB subnet group for VPC placement
 - Parameter group with optimized settings
+- VPC-suffixed subnet/parameter group names to avoid collisions with pre-existing resources in the same AWS account/region
+- VPC-suffixed DB identifier to avoid collisions with legacy instances created in another VPC
 - Automatic password generation (optional)
 - Storage encryption at rest
 - CloudWatch logs export

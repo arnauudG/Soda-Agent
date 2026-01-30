@@ -46,7 +46,7 @@ module "vpc_endpoints" {
 
   tags = {
     Environment = "dev"
-    Project     = "Soda-Agent"
+    Project     = "DQ-Infrastructures"
   }
 }
 ```
