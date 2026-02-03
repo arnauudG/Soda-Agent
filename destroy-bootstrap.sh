@@ -52,7 +52,6 @@ fi
 export TF_VAR_environment="$ENVIRONMENT"
 export TF_VAR_region="$REGION"
 
-<<<<<<< HEAD
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BOOTSTRAP_DIR="$SCRIPT_DIR/env/stack/bootstrap"
 
@@ -61,21 +60,6 @@ if [ ! -d "$BOOTSTRAP_DIR" ]; then
   exit 1
 fi
 
-=======
-if [ -z "$AWS_PROFILE" ] && [ -z "$AWS_ACCESS_KEY_ID" ]; then
-  print_error "Missing AWS credentials: set AWS_PROFILE or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY"
-  exit 1
-fi
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BOOTSTRAP_DIR="$SCRIPT_DIR/env/stack/bootstrap"
-
-if [ ! -d "$BOOTSTRAP_DIR" ]; then
-  print_error "Bootstrap directory not found: $BOOTSTRAP_DIR"
-  exit 1
-fi
-
->>>>>>> origin/main
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
 if [ -z "$ACCOUNT_ID" ]; then
   print_error "Unable to determine AWS account id (check credentials)"

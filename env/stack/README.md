@@ -2,7 +2,6 @@
 
 This folder contains the Terragrunt "live" configurations. Each subfolder is a module boundary with its own `terragrunt.hcl` and its own remote state.
 
-<<<<<<< HEAD
 ## Structure
 
 Stacks are now **completely independent** - each has its own VPC and network resources:
@@ -17,14 +16,6 @@ Preferred: use the orchestrators at the repo root (see root [README.md](../../RE
 
 - `./deploy-stack.sh <stack> [--skip-addons]`
 - `./destroy-stack.sh <stack> [--destroy-bootstrap]`
-=======
-## How to run
-
-Preferred: use the orchestrators at the repo root:
-
-- `./deploy-stack.sh <stack> [--skip-addons]`
-- `./destroy-stack.sh <stack> [--skip-addons] [--destroy-bootstrap]`
->>>>>>> origin/main
 
 Core-only behavior (`--skip-addons`):
 
@@ -34,26 +25,17 @@ Core-only behavior (`--skip-addons`):
 Advanced: run an individual module directly:
 
 ```bash
-<<<<<<< HEAD
 cd env/stack/soda-agent/network/vpc
-=======
-cd env/stack/network/vpc
->>>>>>> origin/main
 terragrunt apply
 ```
 
 ## Module map
 
-<<<<<<< HEAD
 ### Bootstrap (shared)
-=======
-### Bootstrap
->>>>>>> origin/main
 
 - `env/stack/bootstrap`
   - Creates the Terraform backend: S3 bucket for state and DynamoDB table for locking.
   - Must exist before any other module can use remote state.
-<<<<<<< HEAD
   - Shared by both stacks.
 
 ### Soda Agent Stack
@@ -77,7 +59,7 @@ terragrunt apply
   - IAM bits that make it easier for the ops instance/user to interact with EKS.
 
 - `env/stack/soda-agent/addons/soda-agent`
-  - Soda Agent add-on (EKS/Helm). See [soda-agent stack README](soda-agent/README.md) and [Helm module README](../../module/application/helm/soda-agent/README.md).
+  - Soda Agent add-on (EKS/Helm). See [soda-agent stack README](soda-agent/README.md) and [Helm module README](../../../module/application/helm/soda-agent/README.md).
 
 ### Collibra DQ Stack
 
@@ -95,38 +77,3 @@ terragrunt apply
 
 - `env/stack/collibra-dq/addons/collibra-dq-standalone/**`
   - Collibra DQ add-on (EC2 + ALB + package upload). See [collibra-dq/README.md](collibra-dq/README.md).
-=======
-
-### Network
-
-- `env/stack/network/vpc`
-  - VPC, public/private subnets, routing, NAT (depending on config).
-
-- `env/stack/network/vpc-endpoints`
-  - Interface and gateway endpoints used by workloads (SSM, ECR, S3, logs, STS, ...).
-
-### Ops
-
-- `env/stack/ops/sg-ops`
-  - Ops/security groups shared by the stack.
-
-- `env/stack/ops/ec2-ops`
-  - Ops EC2 instance (commonly used for access, debugging, and operational tasks).
-
-### EKS
-
-- `env/stack/eks`
-  - EKS cluster + managed node groups + core addons.
-
-- `env/stack/eks/ops-ec2-eks-access`
-  - IAM bits that make it easier for the ops instance/user to interact with EKS.
-
-### Add-ons
-
-- `env/stack/addons/soda-agent` — soda-agent add-on (EKS/Helm). See `env/stack/addons/soda-agent/README.md`.
-- `env/stack/addons/collibra-dq-standalone/**` — collibra-dq add-on (EC2 + ALB + package upload). See `env/stack/addons/collibra-dq-standalone/README.md`.
-
-### Database (collibra-dq)
-
-- `env/stack/database/rds-collibra-dq/sg-rds`, `env/stack/database/rds-collibra-dq/rds` — used by the collibra-dq add-on.
->>>>>>> origin/main

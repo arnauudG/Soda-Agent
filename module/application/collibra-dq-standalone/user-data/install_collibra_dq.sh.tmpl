@@ -133,10 +133,7 @@ echo "Checking setup.sh help..."
 "$SETUP_SCRIPT" -help 2>&1 | head -20 || "$SETUP_SCRIPT" --help 2>&1 | head -20 || echo "No help available"
 
 # Run setup.sh with non-interactive flag to avoid prompts
-<<<<<<< HEAD
 # Note: setup.sh does not support admin user parameters - admin user is created via web UI on first access
-=======
->>>>>>> origin/main
 echo "Running setup.sh..."
 SETUP_OUTPUT=$("$SETUP_SCRIPT" -owlbase="$ACTUAL_OWL_BASE" -user="$OWL_METASTORE_USER" -pgpassword="$OWL_METASTORE_PASS" -options=spark,owlweb,owlagent -pgserver="$PG_SERVER" -non-interactive 2>&1)
 SETUP_EXIT=$?

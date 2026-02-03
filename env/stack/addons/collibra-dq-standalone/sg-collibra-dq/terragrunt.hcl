@@ -1,8 +1,4 @@
-<<<<<<<< HEAD:env/stack/collibra-dq/addons/collibra-dq-standalone/sg-collibra-dq/terragrunt.hcl
-# env/stack/collibra-dq/addons/collibra-dq-standalone/sg-collibra-dq/terragrunt.hcl
-========
 # env/stack/addons/collibra-dq-standalone/sg-collibra-dq/terragrunt.hcl
->>>>>>>> origin/main:env/stack/addons/collibra-dq-standalone/sg-collibra-dq/terragrunt.hcl
 # Security Group for Collibra DQ Standalone instance
 
 include "root" {
@@ -44,14 +40,10 @@ dependency "sg_alb" {
 }
 
 dependencies {
-<<<<<<<< HEAD:env/stack/collibra-dq/addons/collibra-dq-standalone/sg-collibra-dq/terragrunt.hcl
   paths = [
     "../../../network/vpc",
     "../alb/sg-alb"  # Ensure ALB SG is created before Collibra DQ SG
   ]
-========
-  paths = ["../../../network/vpc"]
->>>>>>>> origin/main:env/stack/addons/collibra-dq-standalone/sg-collibra-dq/terragrunt.hcl
 }
 
 terraform {

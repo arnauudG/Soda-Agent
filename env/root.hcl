@@ -61,24 +61,12 @@ locals {
   tg_download_dir = pathexpand("~/.terragrunt-cache")
 
   # ==========================================================================
-<<<<<<< HEAD
   # SHARED NAMING CONVENTIONS
   # ==========================================================================
-  # Consistent resource naming patterns across all stacks
   # Pattern: ${org}-${env}-<component>-<resource-type>
-  # Examples:
-  #   - EKS cluster: ${org}-${env}-soda-agent-eks
-  #   - Agent name: ${org}-${env}-agent (derived from cluster name)
-  #   - EC2 instance: ${org}-${env}-soda-agent-ops
-  #   - Security group: ${org}-${env}-<component>-sg
-  #
-  # Naming helpers (use string manipulation functions):
-  #   - Build resource: "${local.org}-${local.env}-${component}-${resource_type}"
-  #   - Derive agent from cluster: replace cluster name pattern to extract org-env-agent
+  # Examples: ${org}-${env}-soda-agent-eks, ${org}-${env}-collibra-dq-standalone-sg
 
   # ==========================================================================
-=======
->>>>>>> origin/main
   # STATE BACKEND NAMING
   # ==========================================================================
   state_bucket = "${local.actual_account_id}-${local.org}-${local.env}-tfstate-${local.aws_region}"
@@ -107,10 +95,7 @@ locals {
   rds_config         = local.env_settings.rds
   collibra_dq_config = local.env_settings.collibra_dq
   alb_config         = local.env_settings.alb
-<<<<<<< HEAD
   soda_agent_config  = local.env_settings.soda_agent
-=======
->>>>>>> origin/main
 }
 
 # ==========================================================================
@@ -150,8 +135,5 @@ inputs = {
   rds_config         = local.rds_config
   collibra_dq_config = local.collibra_dq_config
   alb_config         = local.alb_config
-<<<<<<< HEAD
   soda_agent_config  = local.soda_agent_config
-=======
->>>>>>> origin/main
 }

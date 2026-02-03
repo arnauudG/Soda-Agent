@@ -1,31 +1,17 @@
 # Scripts
 
-<<<<<<< HEAD
 Minimal validation and test helpers. Deploy and destroy entry points are at the repo root: `deploy-stack.sh` and `destroy-stack.sh`. Both scripts set `TF_INPUT=0` and `TG_INPUT=0` so they run non-interactively (CI, background, or piped input).
-=======
-Validation and test utilities. Deploy/destroy entry points are at the repo root: `deploy-stack.sh` / `destroy-stack.sh`.
-
-**Environment:** Scripts use whatever environment variables are already set in your shell or CI. Set `TF_VAR_environment`, `TF_VAR_region`, AWS credentials, and add-on secrets (e.g. `SODA_*`, `COLLIBRA_DQ_*`) before running deploy/destroy.
->>>>>>> origin/main
 
 ## Structure
 
 ```
 scripts/
-<<<<<<< HEAD
 ├── set-env.example.sh        # Template env file (copy to scripts/set-env.sh, git-ignored)
 ├── validate-env.sh           # Environment variable validation (used by deploy/destroy)
 ├── verify-soda-keys.sh       # Soda key sanity check (Service Account vs HumanUser reminder)
 ├── unlock-terraform-lock.sh  # Unlock stale Terraform state lock (module path + lock ID)
 ├── test-terragrunt.sh        # Terragrunt live config validation under env/stack/** (stack-first)
 └── test-modules.sh           # Terraform module validation under module/**
-=======
-├── test-modules.sh                    # Terraform module validation
-├── test-terragrunt.sh                 # Terragrunt config validation (stack-first)
-├── test-collibra-dq-deployment.sh     # End-to-end collibra-dq checks (requires deployed infra)
-└── utils/
-    └── check-deployment-status.sh    # Quick deployment status
->>>>>>> origin/main
 ```
 
 ## Environment variables
@@ -39,7 +25,6 @@ When using access keys (not a profile), ensure `unset AWS_PROFILE` in `set-env.s
 
 ## Usage
 
-<<<<<<< HEAD
 ### State lock unlock
 
 When Terraform reports "Error acquiring the state lock" (e.g. after a crashed run), unlock only if no other process is using the state. Get the lock ID from the error message, then:
@@ -47,7 +32,6 @@ When Terraform reports "Error acquiring the state lock" (e.g. after a crashed ru
 ```
 ./scripts/unlock-terraform-lock.sh <module-path> <lock-id>
 ```
-
 Example:
 
 ```
@@ -162,38 +146,3 @@ helm uninstall soda-agent -n soda-agent
 
 - **Root:** [README.md](../README.md) — project overview, deployment, env vars, troubleshooting.
 - **Contributing:** [CONTRIBUTING.md](../CONTRIBUTING.md) — branching, commits, release checklist.
-=======
-### Terragrunt validation (stack-first)
-
-Validates the live configs under `env/stack/**` (uses mock outputs where available).
-
-```bash
-./scripts/test-terragrunt.sh [environment] [region]
-# Example:
-./scripts/test-terragrunt.sh dev eu-west-1
-```
-
-### Module validation
-
-```bash
-./scripts/test-modules.sh
-```
-
-### Collibra DQ end-to-end checks
-
-Requires collibra-dq to be deployed and EC2 reachable via SSM.
-
-```bash
-./scripts/test-collibra-dq-deployment.sh [environment] [region]
-# Example:
-./scripts/test-collibra-dq-deployment.sh dev eu-west-1
-```
-
-### Quick deployment status
-
-```bash
-./scripts/utils/check-deployment-status.sh [environment] [region]
-# Example:
-./scripts/utils/check-deployment-status.sh dev eu-west-1
-```
->>>>>>> origin/main

@@ -28,12 +28,6 @@ This folder contains the shared Terragrunt configuration and the live ("apply-ab
 
 All live Terragrunt configs (the things you actually `terragrunt apply`) are under:
 
-<<<<<<< HEAD
 - `env/stack/` — bootstrap, soda-agent, collibra-dq
 
 See [env/stack/README.md](stack/README.md) for the module map and how to run deploy/destroy.
-=======
-- `env/stack/`
-
-See `env/stack/README.md`.
->>>>>>> origin/main

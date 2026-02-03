@@ -28,23 +28,16 @@ print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 # Usage
 usage() {
     cat << EOF
-<<<<<<< HEAD
 Usage: $0 <stack> [--skip-addons]
-=======
-Usage: $0 <stack>
->>>>>>> origin/main
 
 Stack Options:
   soda-agent    soda-agent stack (EKS + Helm)
   collibra-dq   collibra-dq stack (EC2 + ALB + RDS)
 
-<<<<<<< HEAD
 Options:
   --skip-addons   Deploy core infrastructure only (no Soda Agent Helm / no Collibra DQ app).
                   Add-on secrets (SODA_*, COLLIBRA_*) are not required when using this flag.
 
-=======
->>>>>>> origin/main
 Environment Variables (Required):
   TF_VAR_environment  - Environment to deploy (dev, prod)
   TF_VAR_region       - AWS region (eu-west-1, us-east-1, eu-central-1)
@@ -55,7 +48,6 @@ AWS Credentials (one of):
   AWS_SECRET_ACCESS_KEY - AWS secret access key
 
 Examples:
-<<<<<<< HEAD
   # Deploy soda-agent (dev)
   export TF_VAR_environment=dev TF_VAR_region=eu-west-1
   source scripts/set-env.sh
@@ -65,13 +57,6 @@ Examples:
   $0 soda-agent --skip-addons
 
   # Deploy collibra-dq (prod)
-=======
-  # Deploy soda-agent (set TF_VAR_*, AWS creds, add-on secrets in env first)
-  export TF_VAR_environment=dev TF_VAR_region=eu-west-1
-  $0 soda-agent
-
-  # Deploy collibra-dq
->>>>>>> origin/main
   $0 collibra-dq
 EOF
     exit 1
@@ -89,14 +74,6 @@ validate_env() {
         missing+=("TF_VAR_region")
     fi
 
-<<<<<<< HEAD
-=======
-    # Check for AWS credentials
-    if [ -z "$AWS_PROFILE" ] && [ -z "$AWS_ACCESS_KEY_ID" ]; then
-        missing+=("AWS_PROFILE or AWS_ACCESS_KEY_ID")
-    fi
-
->>>>>>> origin/main
     if [ ${#missing[@]} -gt 0 ]; then
         print_error "Missing required environment variables:"
         for var in "${missing[@]}"; do
@@ -121,17 +98,12 @@ validate_env() {
     fi
 }
 
-<<<<<<< HEAD
 # Parse arguments
-=======
-# Validate stack argument
->>>>>>> origin/main
 if [ $# -lt 1 ]; then
     usage
 fi
 
 STACK=$1
-<<<<<<< HEAD
 SKIP_ADDONS="no"
 shift
 
@@ -149,8 +121,6 @@ while [ $# -gt 0 ]; do
 done
 
 export SKIP_ADDONS
-=======
->>>>>>> origin/main
 
 if [[ ! "$STACK" =~ ^(soda-agent|collibra-dq)$ ]]; then
     print_error "Invalid stack: $STACK"
@@ -171,7 +141,6 @@ BASE_DIR="$SCRIPT_DIR/env/stack"
 # Export environment variables for Terragrunt
 export TF_VAR_environment="$ENVIRONMENT"
 export TF_VAR_region="$REGION"
-<<<<<<< HEAD
 # Non-interactive: avoid "Are you sure? (y/n) ERROR EOF" when not a TTY (CI, pipes)
 export TF_INPUT=0
 export TG_INPUT=0
@@ -182,11 +151,6 @@ if [ -z "$AWS_ACCOUNT_ID" ] || [ "$AWS_ACCOUNT_ID" = "unknown" ]; then
     print_error "Unable to determine AWS account id (check AWS credentials / AWS CLI access)"
     exit 1
 fi
-=======
-
-# Get AWS account information
-AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "unknown")
->>>>>>> origin/main
 
 print_status "=================================================="
 print_status "Deployment Configuration"
@@ -197,7 +161,6 @@ print_status "Region:      $REGION"
 print_status "AWS Account: $AWS_ACCOUNT_ID"
 print_status "Base Dir:    $BASE_DIR"
 print_status "=================================================="
-<<<<<<< HEAD
 
 # Validate environment variables for specific stacks
 if [ -f "$SCRIPT_DIR/scripts/validate-env.sh" ]; then
@@ -207,8 +170,6 @@ if [ -f "$SCRIPT_DIR/scripts/validate-env.sh" ]; then
         exit 1
     fi
 fi
-=======
->>>>>>> origin/main
 
 # Check if bootstrap exists
 check_bootstrap_state() {
@@ -342,7 +303,6 @@ deploy_soda_agent() {
     deploy_bootstrap
 
     # Phase 1: VPC
-<<<<<<< HEAD
     deploy_module "soda-agent/network/vpc" "VPC"
 
     # Phase 2: VPC Endpoints
@@ -366,27 +326,6 @@ deploy_soda_agent() {
     else
         deploy_module "soda-agent/addons/soda-agent" "Soda Agent"
     fi
-=======
-    deploy_module "network/vpc" "VPC"
-
-    # Phase 2: VPC Endpoints
-    deploy_module "network/vpc-endpoints" "VPC Endpoints"
-
-    # Phase 3: Security Groups (Ops)
-    deploy_module "ops/sg-ops" "Security Groups (Ops)"
-
-    # Phase 4: EKS Cluster
-    deploy_module "eks" "EKS Cluster"
-
-    # Phase 5: EC2 Ops Instance
-    deploy_module "ops/ec2-ops" "EC2 Ops Instance"
-
-    # Phase 6: EKS Access Configuration
-    deploy_module "eks/ops-ec2-eks-access" "EKS Access Configuration"
-
-    # Phase 7: Soda Agent
-    deploy_module "addons/soda-agent" "Soda Agent"
->>>>>>> origin/main
 
     print_success "Soda Agent stack deployed successfully!"
 }
@@ -398,7 +337,6 @@ deploy_collibra_dq() {
     # Bootstrap (shared)
     deploy_bootstrap
 
-<<<<<<< HEAD
     # Phase 1: VPC
     deploy_module "collibra-dq/network/vpc" "VPC"
 
@@ -430,45 +368,6 @@ deploy_collibra_dq() {
         # Phase 10: Target Group Attachment
         deploy_module "collibra-dq/addons/collibra-dq-standalone/alb/target-group-attachment" "Target Group Attachment"
     fi
-=======
-    # Phase 1: VPC (if not exists)
-    if ! check_module_exists "network/vpc"; then
-        deploy_module "network/vpc" "VPC"
-    else
-        print_status "VPC already exists, skipping..."
-    fi
-
-    # Phase 2: VPC Endpoints (if not exists)
-    if ! check_module_exists "network/vpc-endpoints"; then
-        deploy_module "network/vpc-endpoints" "VPC Endpoints"
-    else
-        print_status "VPC Endpoints already exist, skipping..."
-    fi
-
-    # Phase 3: ALB Security Group (must be created before Collibra DQ SG)
-    deploy_module "addons/collibra-dq-standalone/alb/sg-alb" "ALB Security Group"
-
-    # Phase 4: Collibra DQ Security Group (depends on ALB SG)
-    deploy_module "addons/collibra-dq-standalone/sg-collibra-dq" "Collibra DQ Security Group"
-
-    # Phase 5: RDS Security Group (depends on Collibra DQ SG)
-    deploy_module "database/rds-collibra-dq/sg-rds" "RDS Security Group"
-
-    # Phase 6: RDS Database
-    deploy_module "database/rds-collibra-dq/rds" "RDS PostgreSQL Database"
-
-    # Phase 7: Package Upload
-    deploy_module "addons/collibra-dq-standalone/package-upload" "Package Upload (S3)"
-
-    # Phase 8: EC2 Instance
-    deploy_module "addons/collibra-dq-standalone" "Collibra DQ EC2 Instance"
-
-    # Phase 9: Application Load Balancer
-    deploy_module "addons/collibra-dq-standalone/alb" "Application Load Balancer"
-
-    # Phase 10: Target Group Attachment
-    deploy_module "addons/collibra-dq-standalone/alb/target-group-attachment" "Target Group Attachment"
->>>>>>> origin/main
 
     print_success "Collibra DQ Standalone stack deployed successfully!"
 }

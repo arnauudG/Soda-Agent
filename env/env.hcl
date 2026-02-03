@@ -68,25 +68,17 @@ locals {
       alb = {
         deletion_protection = false
       }
-<<<<<<< HEAD
 
       # Soda Agent
       soda_agent = {
-        # Helm chart: use full URL so Terraform does not depend on "helm repo add"
         chart_repo    = "https://helm.soda.io/soda-agent/"
         chart_version = ""             # Empty = latest; pin in prod (e.g. "1.3.15")
         chart_name    = "soda-agent"
-        
-        # Agent configuration
-        namespace     = "soda-agent"   # Kubernetes namespace
-        log_format    = "raw"           # Log format: raw, json
-        log_level     = "INFO"         # Log level: DEBUG, INFO, WARN, ERROR
-        
-        # Cloud endpoint (derived from SODA_CLOUD_REGION env var, defaults to EU)
-        cloud_region  = "eu"            # eu or us
+        namespace     = "soda-agent"
+        log_format    = "raw"
+        log_level     = "INFO"
+        cloud_region  = "eu"
       }
-=======
->>>>>>> origin/main
     }
 
     prod = {
@@ -138,7 +130,6 @@ locals {
       alb = {
         deletion_protection = true
       }
-<<<<<<< HEAD
 
       # Soda Agent (production: pin chart version for reproducibility)
       soda_agent = {
@@ -150,8 +141,6 @@ locals {
         log_level     = "INFO"
         cloud_region  = "eu"
       }
-=======
->>>>>>> origin/main
     }
   }
 
