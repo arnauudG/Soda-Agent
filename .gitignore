@@ -32,7 +32,8 @@ env/**/main.tf
 *.swo
 *~
 
-# IDE files
+# IDE and editor files
+.cursor/
 .vscode/
 .idea/
 *.sublime-project
@@ -52,6 +53,7 @@ Thumbs.db
 .env
 .env.local
 *.env
+scripts/set-env.sh
 
 # Logs
 *.log

@@ -19,10 +19,16 @@ variable "agent_name" {
   description = "Soda agent name (unique per Soda Cloud account). Use a STABLE value (no timestamps)."
 }
 
+variable "agent_id" {
+  type        = string
+  description = "Optional: existing Soda Agent ID from Soda Cloud (Agents → select agent → ID in URL). When set, the orchestrator uses this agent instead of registering a new one. Required when redeploying and the agent name is already registered."
+  default     = ""
+}
+
 variable "chart_repo" {
   type        = string
-  description = "Soda Agent Helm chart repo"
-  default     = "https://registry.cloud.soda.io/chartrepo/agent"
+  description = "Soda Agent Helm chart repository URL. Official public repo: https://helm.soda.io/soda-agent/"
+  default     = "https://helm.soda.io/soda-agent/"
 }
 
 variable "chart_version" {
@@ -57,26 +63,16 @@ variable "api_key_secret" {
 
 variable "image_credentials_id" {
   type        = string
-  description = "Optional: API key id for Soda private registry (required if existing_image_pull_secret is empty)"
+  description = "Optional: API key id for Soda private registry"
   default     = ""
   sensitive   = true
-
-  validation {
-    condition     = var.existing_image_pull_secret != "" || trimspace(var.image_credentials_id) != ""
-    error_message = "Provide image_credentials_id when existing_image_pull_secret is empty."
-  }
 }
 
 variable "image_credentials_secret" {
   type        = string
-  description = "Optional: API key secret for Soda private registry (required if existing_image_pull_secret is empty)"
+  description = "Optional: API key secret for Soda private registry"
   default     = ""
   sensitive   = true
-
-  validation {
-    condition     = var.existing_image_pull_secret != "" || trimspace(var.image_credentials_secret) != ""
-    error_message = "Provide image_credentials_secret when existing_image_pull_secret is empty."
-  }
 }
 
 variable "existing_image_pull_secret" {

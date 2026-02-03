@@ -196,3 +196,15 @@ variable "license_name" {
   sensitive   = true
   default     = ""
 }
+
+# Install script in S3 (avoids EC2 user data 16KB limit)
+variable "install_script_bucket_name" {
+  description = "S3 bucket name where the full install script is uploaded (same as package bucket)"
+  type        = string
+}
+
+variable "install_script_s3_key" {
+  description = "S3 object key for the install script"
+  type        = string
+  default     = "collibra-dq/install_collibra_dq.sh"
+}

@@ -38,7 +38,7 @@ locals {
     Org        = local.org
     Env        = local.env
     Region     = local.aws_region
-    Project    = "Soda-Agent"
+    Project    = "DQ-Infrastructures"
     CostCenter = "Engineering"
   }
 

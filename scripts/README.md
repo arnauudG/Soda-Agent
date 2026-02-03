@@ -1,113 +1,149 @@
-# Scripts Directory
+# Scripts
 
-This directory contains testing, validation, and utility scripts. Deployment and destruction are handled by unified scripts in the project root.
+Minimal validation and test helpers. Deploy and destroy entry points are at the repo root: `deploy-stack.sh` and `destroy-stack.sh`. Both scripts set `TF_INPUT=0` and `TG_INPUT=0` so they run non-interactively (CI, background, or piped input).
 
 ## Structure
 
 ```
 scripts/
-├── test-collibra-dq-deployment.sh  # Comprehensive testing for Collibra DQ
-├── test-modules.sh                  # Validates Terraform modules
-├── test-terragrunt.sh               # Validates Terragrunt configurations
-├── validate-env.sh                   # Environment variable validation
-├── utils/                            # Utility scripts
-│   └── check-deployment-status.sh   # Quick deployment status check
-└── README.md                         # This file
+├── set-env.example.sh        # Template env file (copy to scripts/set-env.sh, git-ignored)
+├── validate-env.sh           # Environment variable validation (used by deploy/destroy)
+├── verify-soda-keys.sh       # Soda key sanity check (Service Account vs HumanUser reminder)
+├── unlock-terraform-lock.sh  # Unlock stale Terraform state lock (module path + lock ID)
+├── test-terragrunt.sh        # Terragrunt live config validation under env/stack/** (stack-first)
+└── test-modules.sh           # Terraform module validation under module/**
 ```
+
+## Environment variables
+
+Scripts use whatever is **already in your shell**. They do not load any file.
+
+1. Copy and edit: `cp scripts/set-env.example.sh scripts/set-env.sh`
+2. In the same shell: `source scripts/set-env.sh` then run deploy/destroy.
+
+When using access keys (not a profile), ensure `unset AWS_PROFILE` in `set-env.sh` or the shell.
 
 ## Usage
 
-### Testing Scripts
+### State lock unlock
 
-**Comprehensive Collibra DQ Testing**:
-```bash
-./scripts/test-collibra-dq-deployment.sh [env] [region]
-# Example: ./scripts/test-collibra-dq-deployment.sh dev eu-west-1
+When Terraform reports "Error acquiring the state lock" (e.g. after a crashed run), unlock only if no other process is using the state. Get the lock ID from the error message, then:
+
+```
+./scripts/unlock-terraform-lock.sh <module-path> <lock-id>
 ```
 
-Tests all components:
-- EC2 instance status
-- Collibra DQ service status
-- Health endpoints
-- ALB and target group health
-- RDS connectivity
+Example:
 
-**Module Validation**:
-```bash
+```
+./scripts/unlock-terraform-lock.sh collibra-dq/network/vpc 58b32bea-b71b-6385-e816-f98ecba14b71
+```
+
+`module-path` is relative to `env/stack` (e.g. `collibra-dq/network/vpc`, `soda-agent/eks`).
+
+### Environment validation
+
+`deploy-stack.sh` calls this automatically.
+
+```
+./scripts/validate-env.sh <stack> [environment] [skip_addons]
+
+# Examples:
+./scripts/validate-env.sh soda-agent
+./scripts/validate-env.sh soda-agent dev yes
+./scripts/validate-env.sh collibra-dq prod yes
+```
+
+Notes:
+- When `skip_addons` is `yes`, add-on secrets (Soda/Collibra) are not required.
+
+### Soda Agent: verify API keys are set
+
+```
+./scripts/verify-soda-keys.sh
+```
+
+This is a quick sanity check that `SODA_API_KEY_ID` / `SODA_API_KEY_SECRET` are present and reminds you that they must come from **Data Sources → Agents → New Soda Agent** (Service Account keys).
+
+### Terragrunt validation (stack-first)
+
+Validates the live configs under `env/stack/**` (uses mock outputs where available).
+
+```
+./scripts/test-terragrunt.sh [environment] [region]
+
+# Example:
+./scripts/test-terragrunt.sh dev eu-west-1
+```
+
+### Module validation
+
+```
 ./scripts/test-modules.sh
 ```
 
-**Terragrunt Validation**:
-```bash
-./scripts/test-terragrunt.sh [env] [region]
-# Example: ./scripts/test-terragrunt.sh dev eu-west-1
+### Soda Agent utilities
+
+The repository intentionally keeps helper scripts minimal. For Soda Agent day-2 operations, use standard AWS CLI + kubectl:
+
+```
+export TF_VAR_environment=dev TF_VAR_region=eu-west-1
+aws eks update-kubeconfig --name "datashift-${TF_VAR_environment}-soda-agent-eks" --region "$TF_VAR_region"
+kubectl get pods -n soda-agent
+kubectl logs -n soda-agent <pod> --previous --tail=100
 ```
 
-**Environment Validation** (called automatically by deploy scripts):
-```bash
-./scripts/validate-env.sh <stack>
-# Example: ./scripts/validate-env.sh soda-agent
+### Soda Agent: 403 Invalid user type (HumanUser)
+
+If the soda-agent-orchestrator pod is in CrashLoopBackOff and logs show:
+
+- `Agent registration in Soda Cloud failed` with `403` and `Invalid user type: HumanUser`
+
+then **SODA_API_KEY_ID** and **SODA_API_KEY_SECRET** are **Profile (human user) API keys**. Agent registration requires **Service Account** API keys.
+
+**Fix:**
+
+1. In Soda Cloud go to **Data Sources → Agents → New Soda Agent** (or edit an existing agent).
+2. Create or copy **Service Account** API keys (not Profile → API Keys).
+3. Set `SODA_API_KEY_ID` and `SODA_API_KEY_SECRET` to those values, then redeploy or restart the agent (e.g. update the Kubernetes secret and delete the orchestrator pod so it restarts with the new keys).
+
+Verify key type with: `./scripts/verify-soda-keys.sh` (it reminds you that keys must be Service Account keys).
+
+### Soda Agent: agent name already registered (CrashLoopBackOff)
+
+If the soda-agent-orchestrator pod is in CrashLoopBackOff and logs show:
+
+- `agent with name datashift-dev-agent already registered` or `agent_name_already_exists`
+
+then Soda Cloud already has an agent with that name (e.g. from a previous deployment or "New Soda Agent" setup). The orchestrator tries to register a new agent and fails.
+
+**Fix – use the existing agent:**
+
+1. In Soda Cloud go to **Agents** (or **Data Sources → Agents**), find the agent named e.g. `datashift-dev-agent`.
+2. Open the agent and copy its **Agent ID** from the URL (e.g. `https://cloud.soda.io/agents/842feab3-...-06d2813a72c1` → ID is the UUID).
+3. Set `SODA_AGENT_ID` to that UUID and redeploy:
+
+   ```bash
+   export SODA_AGENT_ID="<uuid-from-soda-cloud>"
+   export TF_VAR_environment=dev TF_VAR_region=eu-west-1
+   cd env/stack/soda-agent/addons/soda-agent
+   terragrunt apply -auto-approve
+   ```
+
+4. Or redeploy the full stack with the env var set: `SODA_AGENT_ID=... ./deploy-stack.sh soda-agent`.
+
+To view crash logs: use `kubectl logs` (see above).
+
+### Helm operations stuck (pending-install / pending-upgrade)
+
+If Helm gets stuck, use standard Helm troubleshooting:
+
+```
+helm list -n soda-agent -a
+helm uninstall soda-agent -n soda-agent
 ```
 
-Validates required environment variables before deployment:
-- Soda Agent: `SODA_API_KEY_ID`, `SODA_API_KEY_SECRET`
-- Collibra DQ: `COLLIBRA_DQ_ADMIN_PASSWORD`, `COLLIBRA_DQ_LICENSE_KEY`
+## Documentation
 
-### Utility Scripts
-
-**Quick Deployment Status**:
-```bash
-./scripts/utils/check-deployment-status.sh [env]
-# Example: ./scripts/utils/check-deployment-status.sh dev
-```
-
-## Root-Level Scripts (Primary Entry Points)
-
-All deployment and destruction is handled by unified scripts in the project root:
-
-**Deployment**:
-```bash
-# Deploy Soda Agent stack
-./deploy-stack.sh soda-agent <env>
-
-# Deploy Collibra DQ stack
-./deploy-stack.sh collibra-dq <env>
-```
-
-**Destruction**:
-```bash
-# Destroy Soda Agent stack
-./destroy-stack.sh soda-agent <env>
-
-# Destroy Collibra DQ stack
-./destroy-stack.sh collibra-dq <env>
-```
-
-**Bootstrap**:
-```bash
-# Bootstrap environment (one-time)
-./deploy-bootstrap.sh <env>
-
-# Destroy bootstrap (after all stacks destroyed)
-./destroy-bootstrap.sh <env>
-```
-
-These unified scripts handle:
-- Dependency ordering
-- Error handling
-- Automatic retries
-- Bootstrap management
-- Resource reuse (VPC, endpoints)
-
-## Migration from Old Scripts
-
-If you were using old scripts, here are the equivalents:
-
-| Old Script | New Command |
-|------------|-------------|
-| `scripts/deploy/deploy-collibra-dq.sh` | `./deploy-stack.sh collibra-dq <env>` |
-| `scripts/destroy/destroy-collibra-dq.sh` | `./destroy-stack.sh collibra-dq <env>` |
-| `scripts/test-collibra-dq.sh` | `./scripts/test-collibra-dq-deployment.sh <env>` |
-| `scripts/test-collibra-dq-quick.sh` | `./scripts/test-collibra-dq-deployment.sh <env>` |
-| `scripts/check-collibra-dq-health.sh` | `./scripts/test-collibra-dq-deployment.sh <env>` |
-| `scripts/diagnose-collibra-dq.sh` | `./scripts/test-collibra-dq-deployment.sh <env>` |
+- **Root:** [README.md](../README.md) — project overview, deployment, env vars, troubleshooting.
+- **Contributing:** [CONTRIBUTING.md](../CONTRIBUTING.md) — branching, commits, release checklist.

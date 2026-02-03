@@ -21,9 +21,10 @@ module "soda_agent" {
   namespace    = "soda-agent"
   agent_name   = "datashift-dev-eu-west-1-agent"
 
-  chart_repo    = "soda-agent"
-  chart_version = "1.3.13"
+  chart_repo    = "https://helm.soda.io/soda-agent/"
+  chart_version = "1.3.15"  # Pin in production
   chart_name    = "soda-agent"
+  agent_id      = ""       # Optional: existing agent ID when redeploying
 
   cloud_endpoint = "https://cloud.soda.io"
 
@@ -37,6 +38,13 @@ module "soda_agent" {
   create_namespace = true
 }
 ```
+
+## Agent ID vs. registration
+
+- **Without `agent_id` (default):** The Soda orchestrator starts and tries to **register a new agent** in Soda Cloud with `agent_name`. This works only if that name is **not already taken** (e.g. first-time install, or you have not created an agent with that name in Soda Cloud). If the name is already registered, the orchestrator fails with `agent with name X already registered` and the pod goes into CrashLoopBackOff.
+- **With `agent_id` set:** The orchestrator **uses the existing agent** (no registration). Use this when redeploying after a destroy, or when the agent name is already taken (e.g. you created the agent in Soda Cloud UI first). Set `SODA_AGENT_ID` to the agent’s UUID from Soda Cloud (Agents → select agent → ID in the URL).
+
+So deployment (Terraform/Helm) always **installs** the Soda Agent workload (Helm release + pods). Whether the pod stays healthy depends on Soda Cloud: either a new agent is registered (name free) or an existing agent is used (ID provided).
 
 ## Required Inputs
 
@@ -53,13 +61,15 @@ module "soda_agent" {
 | Name | Description | Type | Default |
 |------|-------------|------|---------|
 | `namespace` | Kubernetes namespace | `string` | `"soda-agent"` |
-| `chart_repo` | Helm chart repository | `string` | `"https://registry.cloud.soda.io/chartrepo/agent"` |
-| `chart_version` | Chart version (empty for latest) | `string` | `""` |
+| `agent_id` | Existing Soda Agent ID (from Soda Cloud Agents → agent → ID in URL). When set, orchestrator uses this agent instead of registering a new one. | `string` | `""` |
+| `chart_repo` | Helm chart repository URL or repo name (use full URL for CI/reproducibility, e.g. `https://helm.soda.io/soda-agent/`) | `string` | `"https://helm.soda.io/soda-agent/"` |
+| `chart_version` | Chart version; empty = latest (pin in production, e.g. `1.3.15`) | `string` | `""` |
 | `chart_name` | Helm chart name | `string` | `"soda-agent"` |
 | `cloud_endpoint` | Soda Cloud endpoint | `string` | `"https://cloud.soda.io"` |
-| `image_credentials_id` | Registry API key ID | `string` | `""` |
+| `image_credentials_id` | Registry API key ID (defaults to agent API key if unset in live config) | `string` | `""` |
 | `image_credentials_secret` | Registry API key secret | `string` | `""` |
-| `existing_image_pull_secret` | Existing image pull secret name | `string` | `""` |
+| `existing_image_pull_secret` | Existing image pull secret name (if set, module does not create one) | `string` | `""` |
+| `image_pull_secret_version` | Rollout knob when reusing external secret | `string` | `"v1"` |
 | `log_format` | Log format (raw/json) | `string` | `"raw"` |
 | `log_level` | Log level (ERROR/WARN/INFO/DEBUG/TRACE) | `string` | `"INFO"` |
 | `create_namespace` | Create namespace if not exists | `bool` | `true` |
@@ -69,8 +79,8 @@ module "soda_agent" {
 | Name | Description |
 |------|-------------|
 | `release_name` | Helm release name |
-| `namespace` | Kubernetes namespace |
-| `agent_name` | Soda agent name |
+| `namespace` | Kubernetes namespace where the agent is deployed |
+| `image_pull_secret_name` | Name of the imagePullSecret used by the agent (created or existing) |
 
 ## Soda Cloud Regions
 
@@ -88,6 +98,8 @@ Set `cloud_endpoint` based on your Soda Cloud region.
 - Agent runs with minimal permissions in dedicated namespace
 - Use IRSA for AWS data source access (not yet implemented)
 
+Note: Terraform state should still be treated as sensitive. Even with `set_sensitive` and sensitive variables, secrets can end up in state and must not be shared.
+
 ## Cost Implications
 
 The Soda Agent itself runs on your EKS cluster nodes:
@@ -101,12 +113,24 @@ The Soda Agent itself runs on your EKS cluster nodes:
 
 - `compute/eks/cluster` - EKS cluster for agent deployment
 
-## Getting API Keys
+## API keys (per Soda docs)
+
+Per [Soda Kubernetes deployment docs](https://docs.soda.io/deployment-options/soda-agent/deploy-soda-agent/deploy-a-soda-agent-in-a-kubernetes-cluster): use **only** the values from the **New Soda Agent** dialog in Soda Cloud.
+
+| Env var | Purpose | Source |
+|--------|---------|--------|
+| `SODA_API_KEY_ID` / `SODA_API_KEY_SECRET` | Agent registration + Soda Cloud connection | **Data Sources → Agents → New Soda Agent** — copy ID and Secret from the dialog |
+| `SODA_IMAGE_APIKEY_ID` / `SODA_IMAGE_APIKEY_SECRET` | (Optional) Pull images from `registry.cloud.soda.io` | If unset, agent keys above are used. Set only if Soda gave you separate registry credentials. |
+
+**Do not use** keys from **Profile → API Keys** for `SODA_API_KEY_*` — those are human user keys and cause `403 Invalid user type: HumanUser`. Use only the keys from the **New Soda Agent** dialog (agent/Service Account keys).
+
+**Steps:**
 
 1. Log in to Soda Cloud
-2. Go to Profile > API Keys
-3. Click "Create API Key"
-4. Copy the ID and Secret
+2. Go to **Data Sources → Agents**
+3. Click **New Soda Agent** (or open an existing agent)
+4. Copy the API key **ID** and **Secret** from the dialog
+5. Set `SODA_API_KEY_ID` and `SODA_API_KEY_SECRET` to those values (leave `SODA_IMAGE_*` unset unless you have separate registry credentials)
 
 **Important**: The agent name must be unique within your Soda Cloud account. If you get registration errors, try a different name or delete the old agent from Soda Cloud.
 
@@ -127,3 +151,8 @@ Verify your API keys are correct and have access to the Soda private registry.
 ### Connection issues
 - Check EKS node security groups allow outbound HTTPS
 - Verify VPC NAT Gateway is working for internet access
+
+## References
+
+- [Soda: Deploy a Soda Agent in a Kubernetes cluster](https://docs.soda.io/soda-v4/deployment-options/deploy-soda-agent/deploy-a-soda-agent-in-a-kubernetes-cluster) — official deployment and API key guidance.
+- [Soda Agent Helm chart](https://helm.soda.io/soda-agent/) — public Helm repository.

@@ -1,18 +1,18 @@
 #!/bin/bash
 set -euxo pipefail
-REGION="${region}"
-OWL_BASE="${owl_base}"
-OWL_METASTORE_USER="${owl_metastore_user}"
-OWL_METASTORE_PASS="${owl_metastore_pass}"
-POSTGRESQL_HOST="${postgresql_host}"
-POSTGRESQL_PORT="${postgresql_port}"
-POSTGRESQL_DATABASE="${postgresql_database}"
-SPARK_PACKAGE="${spark_package}"
-DQ_ADMIN_USER_PASSWORD="${dq_admin_user_password}"
-DQ_PACKAGE_URL="${dq_package_url}"
-DQ_PACKAGE_FILENAME="${dq_package_filename}"
-LICENSE_KEY="${license_key}"
-LICENSE_NAME="${license_name}"
+REGION='${region}'
+OWL_BASE='${owl_base}'
+OWL_METASTORE_USER='${owl_metastore_user}'
+OWL_METASTORE_PASS='${owl_metastore_pass}'
+POSTGRESQL_HOST='${postgresql_host}'
+POSTGRESQL_PORT='${postgresql_port}'
+POSTGRESQL_DATABASE='${postgresql_database}'
+SPARK_PACKAGE='${spark_package}'
+DQ_ADMIN_USER_PASSWORD='${dq_admin_user_password}'
+DQ_PACKAGE_URL='${dq_package_url}'
+DQ_PACKAGE_FILENAME='${dq_package_filename}'
+LICENSE_KEY='${license_key}'
+LICENSE_NAME='${license_name}'
 finish(){ systemctl enable --now amazon-ssm-agent||true;systemctl restart amazon-ssm-agent||true; }
 trap finish EXIT
 exec > >(tee -a /var/log/collibra-dq-install.log) 2>&1
@@ -121,7 +121,33 @@ SETUP_SCRIPT=$(find "$ACTUAL_OWL_BASE" -name "setup.sh" -type f|head -1)
 chmod +x "$SETUP_SCRIPT"
 # Ensure config directory exists and is writable
 mkdir -p "$ACTUAL_OWL_BASE/config" "$ACTUAL_OWL_BASE/pids" "$ACTUAL_OWL_BASE/log" "$ACTUAL_OWL_BASE/bin"||true
-"$SETUP_SCRIPT" -owlbase="$ACTUAL_OWL_BASE" -user="$OWL_METASTORE_USER" -pgpassword="$OWL_METASTORE_PASS" -options=spark,owlweb,owlagent -pgserver="$PG_SERVER"||{ echo "Setup failed";exit 1; }
+
+# Debug: Check setup.sh and Java before running
+echo "SETUP_SCRIPT=$SETUP_SCRIPT"
+echo "JAVA_HOME=$JAVA_HOME"
+java -version 2>&1||echo "WARNING: java command failed"
+[ -f "$SETUP_SCRIPT" ]&&echo "setup.sh exists and is executable"||echo "ERROR: setup.sh not found"
+
+# Try to get help from setup.sh to see available options
+echo "Checking setup.sh help..."
+"$SETUP_SCRIPT" -help 2>&1 | head -20 || "$SETUP_SCRIPT" --help 2>&1 | head -20 || echo "No help available"
+
+# Run setup.sh with non-interactive flag to avoid prompts
+# Note: setup.sh does not support admin user parameters - admin user is created via web UI on first access
+echo "Running setup.sh..."
+SETUP_OUTPUT=$("$SETUP_SCRIPT" -owlbase="$ACTUAL_OWL_BASE" -user="$OWL_METASTORE_USER" -pgpassword="$OWL_METASTORE_PASS" -options=spark,owlweb,owlagent -pgserver="$PG_SERVER" -non-interactive 2>&1)
+SETUP_EXIT=$?
+echo "$SETUP_OUTPUT"
+if [ $SETUP_EXIT -ne 0 ];then
+  echo "Setup exited with code $SETUP_EXIT"
+  # Check if critical files were created despite the error
+  if [ -f "$ACTUAL_OWL_BASE/config/owl-env.sh" ]||[ -f "$ACTUAL_OWL_BASE/owl-env.sh" ];then
+    echo "WARNING: setup.sh failed but config files exist - attempting to continue..."
+  else
+    echo "ERROR: setup.sh failed and no config files found"
+    exit 1
+  fi
+fi
 
 OWL_ENV_SCRIPT=$(find "$ACTUAL_OWL_BASE" -name "owl-env.sh" -type f|head -1)
 [ -z "$OWL_ENV_SCRIPT" ]&&OWL_ENV_SCRIPT=$(find "$OWL_BASE" -name "owl-env.sh" -type f|head -1)
@@ -135,7 +161,44 @@ if [ -n "$OWL_ENV_SCRIPT" ]&&[ -n "$LICENSE_KEY" ]&&[ "$LICENSE_KEY" != "" ];the
   source "$OWL_ENV_SCRIPT"||true
 fi
 
+# Ensure DQ Web listens on all interfaces so ALB can reach it (instance is in private subnet)
+if [ -n "$OWL_ENV_SCRIPT" ]&&[ -f "$OWL_ENV_SCRIPT" ];then
+  grep -q "OWL_WEB_HTTP_ADDRESS" "$OWL_ENV_SCRIPT"||echo 'export OWL_WEB_HTTP_ADDRESS=0.0.0.0' >> "$OWL_ENV_SCRIPT"
+  grep -q "http\.address" "$OWL_ENV_SCRIPT"||echo 'export OWL_WEB_OPTS="$${OWL_WEB_OPTS:-} -Dhttp.address=0.0.0.0"' >> "$OWL_ENV_SCRIPT"
+fi
+# Patch Play/Java config if present so web binds to 0.0.0.0
+for f in "$ACTUAL_OWL_BASE/config/application.conf" "$ACTUAL_OWL_BASE/conf/application.conf" "$ACTUAL_OWL_BASE/owlweb/conf/application.conf";do
+  if [ -f "$f" ];then
+    grep -q "http\.address\|play\.server\.http\.address" "$f" 2>/dev/null&&(sed -i 's/127\.0\.0\.1/0.0.0.0/g; s/"localhost"/"0.0.0.0"/g' "$f"||true)||echo 'play.server.http.address = "0.0.0.0"' >> "$f" 2>/dev/null||true
+    break
+  fi
+done
+
 command -v firewall-cmd >/dev/null 2>&1&&(systemctl enable firewalld||true;systemctl start firewalld||true;for p in 9000 9101 8080 8081;do firewall-cmd --permanent --add-port=$p/tcp||true;done;firewall-cmd --reload||true)
+
+# owlmanage.sh expects /opt/config (owl-env.sh), /opt/bin, /opt/pids, /opt/log
+# Point /opt/config to the directory that actually contains owl-env.sh (may be nested, e.g. .../owl/config)
+OWL_CONFIG_DIR=""
+if [ -n "$OWL_ENV_SCRIPT" ]&&[ -f "$OWL_ENV_SCRIPT" ];then
+  OWL_CONFIG_DIR=$(dirname "$OWL_ENV_SCRIPT")
+  ln -sfn "$OWL_CONFIG_DIR" /opt/config 2>/dev/null||true
+  echo "Linked /opt/config -> $OWL_CONFIG_DIR (contains owl-env.sh)"
+fi
+# Use same install root for bin/pids/log (parent of config dir, or ACTUAL_OWL_BASE)
+OWL_INSTALL_ROOT="$${OWL_CONFIG_DIR:+$$(dirname \"$$OWL_CONFIG_DIR\")}"
+[ -z "$OWL_INSTALL_ROOT" ]||[ ! -d "$OWL_INSTALL_ROOT" ]&&OWL_INSTALL_ROOT="$ACTUAL_OWL_BASE"
+mkdir -p "$ACTUAL_OWL_BASE/config" "$ACTUAL_OWL_BASE/bin" "$ACTUAL_OWL_BASE/pids" "$ACTUAL_OWL_BASE/log"||true
+for d in bin pids log;do
+  [ -d "$OWL_INSTALL_ROOT/$d" ]&&ln -sfn "$OWL_INSTALL_ROOT/$d" "/opt/$d" 2>/dev/null||true
+done
+# If we did not set /opt/config from OWL_ENV_SCRIPT, fall back to ACTUAL_OWL_BASE
+[ -z "$OWL_CONFIG_DIR" ]&&[ -d "$ACTUAL_OWL_BASE/config" ]&&ln -sfn "$ACTUAL_OWL_BASE/config" /opt/config 2>/dev/null||true
+
+# Persist paths for systemd ExecStartPre so restarts recreate correct /opt symlinks
+mkdir -p /etc/collibra-dq
+CONFIG_DIR_FOR_PERSIST="$${OWL_CONFIG_DIR:-$$ACTUAL_OWL_BASE/config}"
+printf 'OWL_CONFIG_DIR=%q\nOWL_INSTALL_ROOT=%q\nOWL_BASE=%q\n' "$CONFIG_DIR_FOR_PERSIST" "$OWL_INSTALL_ROOT" "$ACTUAL_OWL_BASE" > /etc/collibra-dq/opt-paths.conf 2>/dev/null||true
+
 OWL_MANAGE_SCRIPT=$(find "$ACTUAL_OWL_BASE" -name "owlmanage.sh" -type f|head -1)
 [ -z "$OWL_MANAGE_SCRIPT" ]&&OWL_MANAGE_SCRIPT=$(find "$OWL_BASE" -name "owlmanage.sh" -type f|head -1)
 if [ -n "$OWL_MANAGE_SCRIPT" ];then
@@ -143,6 +206,14 @@ if [ -n "$OWL_MANAGE_SCRIPT" ];then
   [ -n "$OWL_ENV_SCRIPT" ]&&[ -f "$OWL_ENV_SCRIPT" ]&&source "$OWL_ENV_SCRIPT"
   "$OWL_MANAGE_SCRIPT" start=all||{ echo "Failed to start services";exit 1; }
   [ "$LICENSE_CONFIGURED" = true ]&&("$OWL_MANAGE_SCRIPT" stop=owlweb||true;sleep 3;"$OWL_MANAGE_SCRIPT" start=owlweb||{ echo "Failed to restart DQ Web";exit 1; })
+  sleep 5
+  if command -v ss >/dev/null 2>&1;then
+    if ss -tlnp 2>/dev/null|grep ':9000'|grep -qE '0\.0\.0\.0|\*';then
+      echo "DQ Web is listening on all interfaces (0.0.0.0:9000) - ALB can reach it"
+    else
+      echo "WARNING: DQ Web may be bound to localhost only. If ALB returns 502/timeout, set bind to 0.0.0.0 in config and restart owlweb. Check: ss -tlnp | grep 9000"
+    fi
+  fi
   cat >/etc/systemd/system/collibra-dq.service <<EOF
 [Unit]
 Description=Collibra DQ Services
@@ -152,6 +223,10 @@ Type=forking
 User=root
 WorkingDirectory=$ACTUAL_OWL_BASE
 Environment="OWL_BASE=$ACTUAL_OWL_BASE"
+Environment="OWL_WEB_HTTP_ADDRESS=0.0.0.0"
+Environment="OWL_WEB_OPTS=-Dhttp.address=0.0.0.0"
+# Ensure /opt symlinks exist for owlmanage.sh; use persisted paths so /opt/config points to dir with owl-env.sh
+ExecStartPre=+/bin/sh -c 'if [ -f /etc/collibra-dq/opt-paths.conf ]; then . /etc/collibra-dq/opt-paths.conf; [ -n "$OWL_CONFIG_DIR" ] \&\& [ -d "$OWL_CONFIG_DIR" ] \&\& ln -sfn "$OWL_CONFIG_DIR" /opt/config; for d in bin pids log; do [ -n "$OWL_INSTALL_ROOT" ] \&\& [ -d "$OWL_INSTALL_ROOT/$d" ] \&\& ln -sfn "$OWL_INSTALL_ROOT/$d" /opt/$d; done; else for d in config bin pids log; do [ -d "$OWL_BASE/$d" ] \&\& ln -sfn "$OWL_BASE/$d" /opt/$d; done; fi'
 ExecStart=$OWL_MANAGE_SCRIPT start=all
 ExecStop=$OWL_MANAGE_SCRIPT stop=all
 Restart=on-failure
@@ -167,9 +242,9 @@ if command -v psql >/dev/null 2>&1&&[ -n "$POSTGRESQL_HOST" ]&&[ "$POSTGRESQL_HO
   echo "Testing RDS PostgreSQL connectivity..."
   export PGPASSWORD="$OWL_METASTORE_PASS"
   if timeout 10 psql -h "$POSTGRESQL_HOST" -p "$POSTGRESQL_PORT" -U "$OWL_METASTORE_USER" -d "$POSTGRESQL_DATABASE" -c "SELECT version();" >/dev/null 2>&1;then
-    echo "✓ RDS PostgreSQL connection test successful"
+    echo "SUCCESS: RDS PostgreSQL connection test successful"
   else
-    echo "⚠ RDS PostgreSQL connection test failed (this may be normal if security groups are not yet configured)"
+    echo "WARNING: RDS PostgreSQL connection test failed (this may be normal if security groups are not yet configured)"
   fi
   unset PGPASSWORD
 fi

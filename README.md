@@ -1,1492 +1,817 @@
-# Soda Infrastructure - Terraform/Terragrunt
+# DQ-Infrastructures
 
-This repository contains the infrastructure as code for deploying Soda Agent on AWS using Terraform and Terragrunt.
+Infrastructure as Code (IaC) project for deploying data quality tools on AWS using Terraform and Terragrunt. This project manages two independent application stacks: **Soda Agent** (containerized on EKS) and **Collibra DQ** (standalone EC2 deployment).
 
-## **Infrastructure Overview**
+## Table of Contents
 
-The infrastructure consists of:
-- **VPC with private/public subnets** across 3 AZs
-- **VPC Endpoints** for SSM, ECR, STS, CloudWatch Logs, and S3
-- **EKS Cluster** with managed node groups
-- **Ops Infrastructure** (EC2 instance, security groups, IAM roles)
-- **Soda Agent** deployed via Helm on EKS
-- **Collibra DQ Standalone** (optional) - EC2-based deployment with RDS PostgreSQL and ALB
+- [Overview](#overview)
+- [Package Contents (Root)](#package-contents-root)
+- [Project Structure](#project-structure)
+- [Architecture & Design Decisions](#architecture--design-decisions)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Deployment Guide](#deployment-guide)
+- [Components](#components)
+- [Environment Variables](#environment-variables)
+- [Package Deployment](#package-deployment)
+- [Troubleshooting](#troubleshooting)
+- [Security Notes](#security-notes)
+- [Contributing](#contributing)
+- [Additional Documentation](#additional-documentation)
 
-## **Directory Structure**
+## Overview
 
-```
-Soda-Agent/
-├── module/                         # Shared Terraform modules
-│   ├── application/               # Application modules
-│   │   ├── helm/soda-agent/      # Soda Agent Helm deployment
-│   │   └── collibra-dq-standalone/ # Collibra DQ EC2 deployment
-│   ├── compute/                   # Compute modules
-│   │   ├── ec2/ops/              # EC2 ops instance
-│   │   └── eks/cluster/          # EKS cluster
-│   ├── database/                  # Database modules
-│   │   └── rds/postgresql/       # RDS PostgreSQL
-│   ├── network/                   # Network modules
-│   │   ├── vpc/                  # VPC with subnets
-│   │   ├── vpc-endpoints/        # VPC endpoints
-│   │   └── alb/                  # Application Load Balancer
-│   ├── security/                  # Security modules
-│   │   ├── iam/ops-eks-access/   # EKS access configuration
-│   │   └── security-group/       # Security groups
-│   └── storage/                   # Storage modules
-│       └── s3-package/           # S3 package storage
-├── env/                            # Environment-specific configurations
-│   ├── dev/
-│   │   ├── root.hcl               # Environment-level config (env = "dev")
-│   │   └── eu-west-1/
-│   │       ├── root.hcl           # Region-level config (aws_region)
-│   │       ├── bootstrap/          # Phase 0: Bootstrap (one-time)
-│   │       ├── network/
-│   │       │   ├── vpc/            # Phase 1: VPC
-│   │       │   └── vpc-endpoints/  # Phase 2: VPC Endpoints
-│   │       ├── ops/
-│   │       │   ├── sg-ops/         # Phase 3: Security Groups
-│   │       │   └── ec2-ops/        # Phase 5: EC2 Instance
-│   │       ├── eks/
-│   │       │   ├── terragrunt.hcl  # Phase 4: EKS Cluster
-│   │       │   └── ops-ec2-eks-access/  # Phase 6: EKS Access
-│   │       └── addons/
-│   │           ├── soda-agent/     # Phase 7: Soda Agent
-│   │           └── collibra-dq-standalone/  # Collibra DQ Standalone
-│   │               └── README.md   # Addon-specific documentation
-│   └── prod/
-│       └── eu-west-1/              # Same structure as dev
-├── scripts/                        # Testing, validation, and utility scripts
-│   ├── test-collibra-dq-deployment.sh  # Comprehensive Collibra DQ testing
-│   ├── test-modules.sh            # Terraform module validation
-│   ├── test-terragrunt.sh         # Terragrunt config validation
-│   ├── utils/                     # Utility scripts
-│   │   └── check-deployment-status.sh
-│   └── README.md                  # Scripts documentation
-├── deploy-bootstrap.sh             # One-time bootstrap script (optional, auto-created by deploy-stack.sh)
-├── deploy-stack.sh                 # Unified stack deployment (soda-agent | collibra-dq)
-├── destroy-stack.sh                # Unified stack destruction (soda-agent | collibra-dq)
-├── destroy-bootstrap.sh           # Bootstrap destruction (use destroy-stack.sh --destroy-bootstrap instead)
-├── .pre-commit-config.yaml         # Pre-commit hooks configuration
-├── .gitignore                      # Git ignore rules
-└── README.md                       # This file
-```
+This repository contains Terraform modules and Terragrunt configurations for deploying:
 
-### **Terragrunt Configuration Hierarchy**
+1. **Soda Agent Stack**: Data quality monitoring tool deployed on Amazon EKS (Kubernetes) using Helm
+2. **Collibra DQ Stack**: Data quality platform deployed as a standalone application on EC2 with Application Load Balancer (ALB) and RDS PostgreSQL
 
-The configuration follows a hierarchical structure:
+Both stacks are **completely independent** with separate VPCs, network resources, and state management. This design eliminates cross-stack dependencies and simplifies deployment/destruction operations.
+
+## Package Contents (Root)
+
+Root-level files included in this production-ready package:
+
+| File | Purpose |
+|------|---------|
+| **deploy-stack.sh** | Main deployment orchestrator. Deploys bootstrap (if needed), then stack modules in order. Supports `--skip-addons` for core-only deployment. |
+| **destroy-stack.sh** | Stack destruction in reverse order. Options: `--destroy-bootstrap` to also remove state backend. Prompts for confirmation. |
+| **deploy-bootstrap.sh** | Bootstrap-only: creates S3 state bucket and DynamoDB lock table. Used automatically by deploy-stack.sh when needed. |
+| **destroy-bootstrap.sh** | Destroys bootstrap (S3 + DynamoDB). Requires typing `DESTROY BOOTSTRAP` to confirm. |
+| **README.md** | This file: overview, structure, prerequisites, quick start, deployment guide, env vars, troubleshooting. |
+| **.gitignore** | Excludes Terraform/Terragrunt caches, state, generated files, secrets (`scripts/set-env.sh`), and large packages. |
+| **.pre-commit-config.yaml** | Pre-commit hooks: trailing whitespace, YAML/JSON checks, Terraform fmt/validate/tflint, detect-private-key. Run `pre-commit install` then `pre-commit run --all-files` before shipping. |
+
+**Required for deployment:** Copy `scripts/set-env.example.sh` to `scripts/set-env.sh`, fill in values, and `source scripts/set-env.sh` before running deploy/destroy. See [Environment Variables](#environment-variables).
+
+**Before you ship:** Ensure `scripts/set-env.example.sh` exists (template for secrets); run `pre-commit run --all-files` to catch formatting/lint issues; do not commit `scripts/set-env.sh` or any file containing secrets (they are git-ignored); run a full deploy/destroy test if possible; and confirm no secrets are in the repo. See [CONTRIBUTING.md](CONTRIBUTING.md) for the release checklist.
+
+## Project Structure
 
 ```
-env/dev/root.hcl
-  └── org = "datashift" (hardcoded)
-  └── env = "dev"
-  └── common_tags (without Region)
-  
-env/dev/eu-west-1/root.hcl
-  └── includes env/dev/root.hcl
-  └── aws_region = "eu-west-1"
-  └── common_tags (with Region added)
-  └── state_bucket, lock_table
+DQ-Infrastructures/
+├── env/                              # Terragrunt configuration hierarchy
+│   ├── root.hcl                     # Global config: validations, remote state, shared inputs
+│   ├── env.hcl                      # Environment definitions (dev/prod) and account mappings
+│   ├── common.hcl                   # Common provider/backend generation blocks
+│   ├── region.hcl                    # Region-specific configuration (tags, state naming)
+│   └── stack/                       # Live infrastructure configurations (what gets deployed)
+│       ├── bootstrap/                # Shared: Terraform state backend (S3 + DynamoDB)
+│       ├── soda-agent/              # Independent Soda Agent stack
+│       │   ├── network/
+│       │   │   ├── vpc/              # VPC, subnets, routing, NAT
+│       │   │   └── vpc-endpoints/    # VPC endpoints for AWS services
+│       │   ├── ops/
+│       │   │   ├── sg-ops/           # Security groups for ops instances
+│       │   │   └── ec2-ops/          # Ops EC2 instance (SSM access, debugging)
+│       │   ├── eks/
+│       │   │   ├── terragrunt.hcl    # EKS cluster + managed node groups
+│       │   │   └── ops-ec2-eks-access/ # IAM/RBAC for ops → EKS access
+│       │   └── addons/
+│       │       └── soda-agent/      # Soda Agent Helm chart deployment
+│       └── collibra-dq/              # Independent Collibra DQ stack
+│           ├── network/
+│           │   ├── vpc/              # VPC, subnets, routing, NAT
+│           │   └── vpc-endpoints/   # VPC endpoints (SSM, S3)
+│           ├── database/
+│           │   └── rds-collibra-dq/
+│           │       ├── sg-rds/       # RDS security group
+│           │       └── rds/          # PostgreSQL database
+│           └── addons/
+│               └── collibra-dq-standalone/
+│                   ├── package-upload/    # S3 package upload module
+│                   ├── sg-collibra-dq/    # EC2 security group
+│                   ├── terragrunt.hcl     # EC2 instance
+│                   └── alb/
+│                       ├── sg-alb/        # ALB security group
+│                       ├── terragrunt.hcl # Application Load Balancer
+│                       └── target-group-attachment/ # EC2 → ALB attachment
+│
+├── module/                           # Reusable Terraform modules
+│   ├── application/                  # Application-specific modules
+│   │   ├── collibra-dq-standalone/  # Collibra DQ EC2 deployment
+│   │   └── helm/                     # Helm chart deployment (Soda Agent)
+│   ├── compute/                      # Compute resources
+│   │   ├── ec2/ops/                  # Ops EC2 instance module
+│   │   └── eks/cluster/              # EKS cluster module
+│   ├── database/
+│   │   └── rds/postgresql/           # RDS PostgreSQL module
+│   ├── network/
+│   │   ├── alb/                      # Application Load Balancer modules
+│   │   ├── vpc/                      # VPC module
+│   │   └── vpc-endpoints/            # VPC endpoints module
+│   ├── security/
+│   │   ├── iam/                      # IAM roles/policies
+│   │   └── security-group/          # Security group modules
+│   └── storage/
+│       └── s3-package/               # S3 package storage module
+│
+├── packages/                         # Large binary artifacts (git-ignored)
+│   └── collibra-dq/                  # Collibra DQ installation package
+│
+├── scripts/                          # Utility and validation scripts
+│   ├── set-env.example.sh            # Environment variable template
+│   ├── validate-env.sh               # Environment validation
+│   ├── verify-soda-keys.sh           # Soda Agent key sanity check
+│   ├── test-terragrunt.sh            # Terragrunt config validation (stack-first)
+│   └── test-modules.sh               # Terraform module validation
+│
+├── deploy-stack.sh                   # Main deployment orchestrator
+├── destroy-stack.sh                  # Main destruction orchestrator
+├── deploy-bootstrap.sh              # Bootstrap-only deployment
+├── destroy-bootstrap.sh             # Bootstrap-only destruction
+└── README.md                         # This file
 ```
 
-**Note**: The `org` value is hardcoded in environment-level `root.hcl` files to avoid nested include issues. This simplifies the configuration hierarchy while maintaining the same functionality.
-
-This structure allows:
-- **Simplified Configuration**: No nested includes, easier to maintain
-- **Multi-Region Support**: Easy to add new regions
-- **Consistent Tagging**: Tags inherited through the hierarchy
-
-## **Bootstrap Process (One-Time Setup)**
-
-**CRITICAL**: Bootstrap must be run ONCE per environment before any other deployment.
-
-The bootstrap process creates:
-- **S3 bucket** for Terraform state storage
-  - Versioning enabled
-  - Encryption at rest (AES256)
-  - Lifecycle policies (Glacier transition after 30 days, deletion after 90 days)
-  - Public access blocked
-  - TLS-only access enforced
-- **DynamoDB table** for state locking
-  - Point-in-time recovery enabled
-  - Server-side encryption enabled
-  - Pay-per-request billing mode
-- **Consistent tagging** using common_tags from parent configuration
-
-### **When to Bootstrap:**
-- **New environment** (dev, prod)
-- **First time setup**
-- **Existing environment** (already has state bucket)
-
-### **Bootstrap Command:**
-```bash
-./deploy-bootstrap.sh <environment>
-
-# Examples:
-./deploy-bootstrap.sh prod    # Bootstrap production environment
-./deploy-bootstrap.sh dev     # Bootstrap development environment
-```
-
-### **Bootstrap Safety Features:**
-- **Automatic detection** of existing resources
-- **Multiple confirmation prompts** to prevent accidents
-- **Automatic disable** after completion
-- **Resource existence checks** before proceeding
-
-### **Destroying Bootstrap Resources:**
-
-**WARNING**: Bootstrap destruction should ONLY be run AFTER all infrastructure has been destroyed. This will delete:
-- **All Terraform state files** (stored in S3 bucket)
-- **State locking table** (DynamoDB)
-- **All state history** (versioned state files)
-
-**Bootstrap Destruction Command:**
-```bash
-./destroy-bootstrap.sh <environment>
-
-# Examples:
-./destroy-bootstrap.sh dev     # Destroy dev bootstrap resources
-./destroy-bootstrap.sh prod    # Destroy prod bootstrap resources
-
-# Or use the unified destroy script:
-./destroy-stack.sh <stack> <env> --destroy-bootstrap
-```
-
-**Safety Features:**
-- Requires explicit confirmation: Type `DESTROY BOOTSTRAP` to confirm
-- Shows resource count before destruction
-- Checks for existing resources
-- Multiple warnings about data loss
-
-**Order of Operations:**
-1. Destroy all stacks: `./destroy-stack.sh <stack> <env>` (for each stack)
-2. Destroy bootstrap: `./destroy-stack.sh <stack> <env> --destroy-bootstrap` (after both stacks destroyed)
-
-## **Quick Start**
-
-### **Deploy a Stack**
-
-The easiest way to deploy is using the unified deployment script:
-
-```bash
-# Deploy Soda Agent stack (EKS-based)
-./deploy-stack.sh soda-agent dev
-
-# Deploy Collibra DQ Standalone stack (EC2-based)
-./deploy-stack.sh collibra-dq dev
-
-# For production
-./deploy-stack.sh soda-agent prod
-./deploy-stack.sh collibra-dq prod
-```
-
-**What happens automatically:**
-- Bootstrap is created if missing
-- Shared resources (VPC, endpoints) are reused if already deployed
-- All dependencies are deployed in the correct order
-- Package upload is automatically optimized (prevents re-uploads)
-
-### **Destroy a Stack**
-
-```bash
-# Destroy Soda Agent stack (keeps shared resources)
-./destroy-stack.sh soda-agent dev
-
-# Destroy Collibra DQ Standalone stack (keeps shared resources)
-./destroy-stack.sh collibra-dq dev
-
-# Destroy bootstrap (only after both stacks are destroyed)
-./destroy-stack.sh soda-agent dev --destroy-bootstrap
-```
-
-## **Manual Deployment (Advanced)**
-
-If you need to deploy components manually, follow this order:
-
-### **Phase 0: Bootstrap (One-time)**
-```bash
-./deploy-bootstrap.sh <env>  # Optional - auto-created by deploy-stack.sh
-```
-
-### **Soda Agent Stack Phases:**
-1. VPC (`network/vpc`)
-2. VPC Endpoints (`network/vpc-endpoints`)
-3. Security Groups (`ops/sg-ops`)
-4. EKS Cluster (`eks`)
-5. EC2 Ops Instance (`ops/ec2-ops`)
-6. EKS Access Configuration (`eks/ops-ec2-eks-access`)
-7. Soda Agent (`addons/soda-agent`)
-
-### **Collibra DQ Stack Phases:**
-1. Bootstrap (`bootstrap`) - One-time setup
-2. VPC (`network/vpc`) - Reused if exists
-3. VPC Endpoints (`network/vpc-endpoints`) - Reused if exists
-4. Collibra DQ Security Group (`addons/collibra-dq-standalone/sg-collibra-dq`)
-5. RDS Security Group (`database/rds-collibra-dq/sg-rds`) - Depends on Collibra DQ SG
-6. RDS Database (`database/rds-collibra-dq/rds`) - PostgreSQL metastore
-7. Package Upload (`addons/collibra-dq-standalone/package-upload`) - S3 package storage
-8. EC2 Instance (`addons/collibra-dq-standalone`) - Includes PostgreSQL client
-9. ALB Security Group (`addons/collibra-dq-standalone/alb/sg-alb`)
-10. Application Load Balancer (`addons/collibra-dq-standalone/alb`) - HTTP/HTTPS
-11. Target Group Attachment (`addons/collibra-dq-standalone/alb/target-group-attachment`)
-
-## **Environment Variables**
-
-### **Required for Soda Agent**
-```bash
-export SODA_API_KEY_ID="your-soda-cloud-api-key"
-export SODA_API_KEY_SECRET="your-soda-cloud-api-secret"
-export SODA_IMAGE_APIKEY_ID="your-soda-registry-api-key"
-export SODA_IMAGE_APIKEY_SECRET="your-soda-registry-api-secret"
-```
-
-### **Optional**
-```bash
-export SODA_CLOUD_REGION="eu"  # or "us"
-export SODA_LOG_FORMAT="raw"   # or "json"
-export SODA_LOG_LEVEL="INFO"   # ERROR, WARN, INFO, DEBUG, TRACE
-```
-
-## **Common Issues & Troubleshooting**
-
-### **1. Bootstrap Issues**
-**Error**: `NoSuchBucket` or `NoSuchTable`
-
-**Solution**: Run bootstrap first:
-```bash
-./deploy-bootstrap.sh <env>
-```
-
-### **2. Dependency Errors**
-**Error**: `detected no outputs` or `Unknown variable: dependency` or `There is no variable named "dependency"`
-
-**Causes & Solutions**:
-- **During initial deployment**: This is normal when dependencies haven't been applied yet. Use the automated deployment scripts.
-- **During destroy operations**: When a dependency has already been destroyed, Terragrunt can't read its outputs. Add `"destroy"` to `mock_outputs_allowed_terraform_commands`.
-- **Corrupted terragrunt.hcl files**: Check for error messages accidentally pasted into configuration files.
-- **Missing mock outputs**: Ensure `dependency` blocks have proper `mock_outputs` for validation.
-
-**Fix for destroy operations**:
-Update dependency blocks to allow mock outputs during destroy:
-```hcl
-dependency "vpc" {
-  config_path = "../vpc"
-  mock_outputs = {
-    vpc_id = "vpc-123456"
-    # ... other mock outputs
-  }
-  mock_outputs_allowed_terraform_commands = ["init", "plan", "destroy"]  # Add "destroy"
-}
-```
-
-**Fix corrupted files**:
-```bash
-# Check for error messages in terragrunt.hcl files
-grep -r "ERROR\|WARN" env/*/eu-west-1/*/terragrunt.hcl
-
-# Restore from working dev environment if needed
-cp env/dev/eu-west-1/ops/sg-ops/terragrunt.hcl env/prod/eu-west-1/ops/sg-ops/terragrunt.hcl
-```
-
-### **3. EKS Cluster Not Found**
-**Error**: `reading EKS Cluster: couldn't find resource`
-
-**Solution**: Deploy the EKS cluster first before deploying addons or EKS access configurations.
-
-### **4. IAM Role Not Found**
-**Error**: `reading IAM Role: couldn't find resource`
-
-**Solution**: Deploy the ops infrastructure (EC2, security groups) before deploying EKS access configurations.
-
-### **5. Soda Agent Namespace Issues**
-**Error**: `namespaces "soda-agent" not found`
-
-**Solution**: The Soda Agent module now creates the namespace explicitly. This error should be resolved with the updated module.
-
-**Manual fix if needed**:
-```bash
-# Connect to EKS cluster
-aws eks update-kubeconfig --region eu-west-1 --name <cluster-name>
-
-# Create namespace manually
-kubectl create namespace soda-agent
-```
-
-### **6. Helm Chart Download Issues**
-**Error**: `401 Unauthorized` when downloading Helm chart
-
-**Solution**: 
-```bash
-# Add the Soda Helm repository
-helm repo add soda-agent https://registry.cloud.soda.io/chartrepo/agent
-helm repo update
-```
-
-### **7. Image Pull BackOff**
-**Error**: `pull access denied, repository does not exist or may require authorization`
-
-**Solution**: Ensure `SODA_IMAGE_APIKEY_ID` and `SODA_IMAGE_APIKEY_SECRET` are set correctly.
-
-### **8. Agent Registration Errors**
-**Error**: `agent with name already registered`
-
-**Solution**: Use unique agent names by appending timestamps or use different API keys.
-
-### **9. Terragrunt Configuration Corruption**
-**Error**: Error messages appearing in terragrunt.hcl files
-
-**Symptoms**:
-- Files contain terminal output mixed with configuration
-- `Unknown variable: dependency` errors
-- Validation failures
-
-**Solution**:
-```bash
-# Check for corrupted files
-find env/ -name "terragrunt.hcl" -exec grep -l "ERROR\|WARN\|arnaudgueulette" {} \;
-
-# Restore from working environment
-cp env/dev/eu-west-1/ops/sg-ops/terragrunt.hcl env/prod/eu-west-1/ops/sg-ops/terragrunt.hcl
-```
-
-### **10. Deployment Order Issues**
-**Error**: Resources failing due to missing dependencies
-
-**Solution**: Always use the automated deployment scripts:
-```bash
-# Deploy Soda Agent stack
-./deploy-stack.sh soda-agent <env>
-
-# Deploy Collibra DQ stack
-./deploy-stack.sh collibra-dq <env>
-```
-
-### **11. Bootstrap Destruction Issues**
-**Error**: `skip = false` already set, or nested include errors during bootstrap destroy
-
-**Solution**: 
-- The bootstrap destruction script handles `skip = false` gracefully
-- Nested include errors in sibling directories don't affect bootstrap destruction
-- Bootstrap uses standalone configuration to avoid include issues
-- Ensure all infrastructure is destroyed before destroying bootstrap
-
-**Manual bootstrap destruction**:
-```bash
-cd env/<env>/eu-west-1/bootstrap
-# Enable if needed
-sed -i.bak 's/skip = true/skip = false/' terragrunt.hcl
-terragrunt destroy --auto-approve
-# Disable after destruction
-sed -i.bak 's/skip = false/skip = true/' terragrunt.hcl
-```
-
-### **12. Stuck VPC Destruction & Orphaned Resources**
-**Error**: VPC stuck in "Still destroying..." state, or `DependencyViolation` when manually deleting resources
-
-**Symptoms**:
-- Terraform destroy hangs on VPC destruction for extended periods (>2 minutes)
-- Manual `aws ec2 delete-vpc` fails with `DependencyViolation`
-- Resources exist in AWS but not in Terraform state (orphaned resources)
-
-**Solution - Step 1: Unlock State Lock**
-If Terraform is stuck, first unlock the state:
-```bash
-cd env/<env>/eu-west-1/network/vpc
-# Get the lock ID from the error message, then:
-terragrunt force-unlock -force <lock-id>
-```
-
-**Solution - Step 2: Identify Blocking Resources**
-Check what's preventing VPC deletion:
-```bash
-VPC_ID="vpc-xxxxxxxxx"  # Replace with your VPC ID
-REGION="eu-west-1"       # Replace with your region
-
-# Check for VPC endpoints
-aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=$VPC_ID" --region $REGION --query 'VpcEndpoints[*].[VpcEndpointId,ServiceName,State]' --output table
-
-# Check for network interfaces
-aws ec2 describe-network-interfaces --filters "Name=vpc-id,Values=$VPC_ID" --region $REGION --query 'NetworkInterfaces[*].[NetworkInterfaceId,Status,InterfaceType,Description]' --output table
-
-# Check for subnets
-aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --region $REGION --query 'Subnets[*].[SubnetId,State,AvailabilityZone]' --output table
-
-# Check for security groups (non-default)
-aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC_ID" --region $REGION --query 'SecurityGroups[?GroupName!=`default`].[GroupId,GroupName]' --output table
-
-# Check for Internet Gateway
-aws ec2 describe-internet-gateways --filters "Name=attachment.vpc-id,Values=$VPC_ID" --region $REGION --query 'InternetGateways[*].[InternetGatewayId,State]' --output table
-
-# Check for NAT Gateways
-aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$VPC_ID" --region $REGION --query 'NatGateways[*].[NatGatewayId,State,SubnetId]' --output table
-
-# Check for route tables
-aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID" --region $REGION --query 'RouteTables[*].[RouteTableId,Associations[0].Main]' --output table
-```
-
-**Solution - Step 3: Manual Cleanup (Delete in Order)**
-Delete resources in dependency order:
-
-1. **Delete VPC Endpoints** (if any):
-```bash
-aws ec2 delete-vpc-endpoint --vpc-endpoint-id <endpoint-id> --region $REGION
-```
-
-2. **Delete Subnets** (if any):
-```bash
-aws ec2 delete-subnet --subnet-id <subnet-id> --region $REGION
-```
-
-3. **Delete Security Groups** (non-default):
-```bash
-aws ec2 delete-security-group --group-id <sg-id> --region $REGION
-```
-
-4. **Delete NAT Gateways** (if any):
-```bash
-aws ec2 delete-nat-gateway --nat-gateway-id <nat-gateway-id> --region $REGION
-# Wait for NAT Gateway to be deleted (may take a few minutes)
-```
-
-5. **Detach and Delete Internet Gateway** (if any):
-```bash
-# First detach
-aws ec2 detach-internet-gateway --internet-gateway-id <igw-id> --vpc-id $VPC_ID --region $REGION
-# Then delete
-aws ec2 delete-internet-gateway --internet-gateway-id <igw-id> --region $REGION
-```
-
-6. **Delete VPC**:
-```bash
-aws ec2 delete-vpc --vpc-id $VPC_ID --region $REGION
-```
-
-**Solution - Step 4: Clean Up Terraform State (if needed)**
-If resources were orphaned (exist in AWS but not in Terraform state), check and clean state:
-```bash
-cd env/<env>/eu-west-1/network/vpc
-# List all resources in state
-terragrunt state list
-
-# If orphaned resources appear in state, remove them:
-terragrunt state rm 'module.vpc.aws_vpc.this[0]'  # Adjust resource address as needed
-```
-
-**Prevention**:
-- Always destroy infrastructure in reverse dependency order using `./destroy.sh <env>`
-- Ensure VPC endpoints are destroyed before VPC (Phase 2 before Phase 1)
-- Use `mock_outputs_allowed_terraform_commands = ["init", "plan", "destroy"]` in dependency blocks to allow mock outputs during destroy operations
-
-## **Cleanup & Maintenance**
-
-### **Remove Generated Files**
-```bash
-# Remove Terraform artifacts
-find . -name ".terraform" -type d -exec rm -rf {} \;
-find . -name ".terraform.lock.hcl" -exec rm -f {} \;
-find . -name "*.tfstate*" -exec rm -f {} \;
-find . -name "*.tfplan" -exec rm -f {} \;
-find . -name "versions_override.tf" -exec rm -f {} \;
-find . -name "provider_override.tf" -exec rm -f {} \;
-```
-
-### **Clear Terragrunt Cache**
-```bash
-rm -rf ~/.terragrunt-cache
-```
-
-## **Pre-deployment Checklist**
-
-- [ ] **Bootstrap completed** (one-time setup)
-- [ ] AWS credentials configured (`aws configure` or environment variables)
-- [ ] Soda API keys exported as environment variables
-- [ ] Helm repositories added and updated
-- [ ] No existing infrastructure conflicts
-- [ ] Proper AWS region selected
-- [ ] S3 bucket for Terraform state exists (created by bootstrap)
-
-## **Module Dependencies**
-
-```
-bootstrap (one-time)
-├── Phase 1: network/vpc
-│   ├── Phase 2: network/vpc-endpoints (depends on vpc)
-│   ├── Phase 3: ops/sg-ops (depends on vpc)
-│   ├── Phase 4: eks (depends on vpc)
-│   │   ├── Phase 5: ops/ec2-ops (depends on vpc + ops/sg-ops)
-│   │   └── Phase 6: ops-ec2-eks-access (depends on eks + ops/ec2-ops)
-│   └── Phase 7: addons/soda-agent (depends on eks)
-```
-
-## **Useful Commands**
-
-### **Bootstrap**
-```bash
-./deploy-bootstrap.sh <env>           # Bootstrap new environment
-./destroy-bootstrap.sh <env>   # Destroy bootstrap (after all infrastructure)
-```
-
-### **Deploy Stacks**
-```bash
-./deploy-stack.sh <stack> <env>     # Deploy entire stack
-# Examples:
-./deploy-stack.sh soda-agent dev    # Deploy Soda Agent stack
-./deploy-stack.sh collibra-dq prod  # Deploy Collibra DQ stack
-```
-
-### **Destroy Stacks**
-```bash
-./destroy-stack.sh <stack> <env>                    # Destroy stack (keeps shared resources)
-./destroy-stack.sh <stack> <env> --destroy-bootstrap  # Also destroy bootstrap
-# Examples:
-./destroy-stack.sh soda-agent dev                    # Destroy Soda Agent stack
-./destroy-stack.sh collibra-dq prod                  # Destroy Collibra DQ stack
-```
-
-### **Validate Configuration**
-```bash
-terragrunt validate-inputs
-terragrunt hcl validate --inputs
-```
-
-### **Plan Changes**
-```bash
-terragrunt plan
-```
-
-### **Apply Changes**
-```bash
-terragrunt apply --auto-approve
-```
-
-### **Check Status**
-```bash
-terragrunt output
-terragrunt show
-```
-
-### **Force Unlock State**
-```bash
-terragrunt force-unlock <lock-id>
-```
-
-## ⚡ **Quick Reference**
-
-### **Most Common Commands**
-```bash
-# Bootstrap new environment (one-time, automatic if missing)
-./deploy-bootstrap.sh prod
-
-# Deploy entire stacks
-./deploy-stack.sh soda-agent prod      # Deploy Soda Agent stack
-./deploy-stack.sh collibra-dq dev       # Deploy Collibra DQ stack
-
-# Destroy entire stacks
-./destroy-stack.sh soda-agent prod      # Destroy Soda Agent stack
-./destroy-stack.sh collibra-dq dev      # Destroy Collibra DQ stack
-
-# Destroy bootstrap (only after both stacks destroyed)
-./destroy-stack.sh soda-agent prod --destroy-bootstrap
-
-# Check for corrupted files
-find env/ -name "terragrunt.hcl" -exec grep -l "ERROR\|WARN" {} \;
-
-# Validate configuration
-terragrunt hcl validate --inputs
-```
-
-## **Soda Agent Stack Deployment**
-
-### **Quick Start**
-
-Deploy the entire Soda Agent stack:
+### Key Directories Explained
+
+- **`env/stack/`**: "Live" configurations that define what actually gets deployed. Each subdirectory is a separate Terraform state boundary.
+- **`module/`**: Reusable Terraform modules that encapsulate infrastructure patterns. These are called by the live configs in `env/stack/`.
+- **`packages/`**: Large binary files (e.g., Collibra DQ installer) that are git-ignored but required for deployment.
+- **`scripts/`**: Helper scripts for validation, testing, and deployment orchestration.
+
+## Architecture & Design Decisions
+
+### 1. Independent Stacks Architecture
+
+**Decision**: Each application stack (`soda-agent` and `collibra-dq`) has its own completely independent VPC and network resources.
+
+**Rationale**:
+- **Eliminates dependency conflicts**: No shared resources means no cross-stack dependency issues
+- **Simplifies destroy operations**: Each stack can be destroyed independently without affecting the other
+- **Enables parallel development**: Teams can work on different stacks without coordination
+- **Reduces blast radius**: Issues in one stack don't affect the other
+- **Follows microservices principles**: Each application is self-contained
+
+**Trade-offs**:
+- Slightly higher AWS costs (separate VPCs, NAT gateways)
+- More network resources to manage
+- **Accepted trade-off**: The operational simplicity and safety outweigh the cost
+
+### 2. Terragrunt for Orchestration
+
+**Decision**: Use Terragrunt instead of pure Terraform for managing the infrastructure.
+
+**Rationale**:
+- **DRY (Don't Repeat Yourself)**: Shared configuration in `env/root.hcl`, `env/common.hcl`, `env/region.hcl`
+- **Dependency management**: Terragrunt's `dependency` blocks automatically handle module ordering
+- **Remote state management**: Automatic S3 backend configuration per module
+- **Environment/region abstraction**: Easy switching between dev/prod and regions
+- **Validation**: Built-in environment and account validation
+
+**How it works**:
+- Each `env/stack/**/terragrunt.hcl` includes shared configs from `env/`
+- Terragrunt automatically configures Terraform backends (S3 + DynamoDB)
+- Dependencies are declared explicitly and Terragrunt ensures correct ordering
+
+### 3. Package Upload Orchestration
+
+**Decision**: Collibra DQ package is uploaded to S3 via a separate Terraform module (`package-upload`) before EC2 instance deployment.
+
+**Rationale**:
+- **Separation of concerns**: Package management is separate from compute deployment
+- **Idempotency**: Package upload can be managed independently (skip re-uploads if needed)
+- **Dependency enforcement**: Terragrunt dependency ensures EC2 waits for package upload
+- **Flexibility**: Package can be updated without redeploying EC2 instance
+
+**Implementation**:
+- `package-upload` module uses `module/storage/s3-package`
+- EC2 module declares `dependency "package_upload"` with `skip_outputs = false`
+- EC2 uses `dependency.package_upload.outputs.s3_url` in its user data
+- Deploy script ensures package-upload completes before EC2 deployment
+
+### 4. Security Group Dependency Ordering
+
+**Decision**: Security groups are deployed in a specific order (ALB SG → EC2 SG → RDS SG) and destroyed in reverse order.
+
+**Rationale**:
+- **AWS constraint**: Security groups with ingress rules referencing other security groups cannot be deleted while the referenced SG exists
+- **Explicit ordering**: Deploy script enforces correct order to prevent failures
+- **Destroy safety**: Destroy script reverses the order to handle dependencies correctly
+
+**Example**:
+- Collibra DQ EC2 SG has ingress rule allowing traffic from ALB SG
+- Therefore: ALB SG must be created before EC2 SG
+- Destroy: EC2 SG must be destroyed before ALB SG
+
+### 5. Single Resource Pattern for S3 Package Upload
+
+**Decision**: S3 package upload module uses a single `aws_s3_object` resource with conditional lifecycle rules instead of multiple resources.
+
+**Rationale**:
+- **Best practice**: Avoids state migration issues when toggling `skip_upload_if_exists`
+- **Simpler state management**: One resource is easier to manage than conditional resource creation
+- **Proper change detection**: Uses Terraform's etag comparison for file changes
+- **Flexible lifecycle**: Conditional `ignore_changes` based on `skip_upload_if_exists` variable
+
+### 6. Bootstrap Import-Aware Design
+
+**Decision**: Bootstrap deployment automatically imports existing S3 bucket and DynamoDB table if they exist but state is missing.
+
+**Rationale**:
+- **Recovery from state loss**: If Terraform state is lost, infrastructure can be recovered
+- **CI/CD friendly**: Handles cases where resources exist but state wasn't committed
+- **Safety**: Prevents accidental resource creation when resources already exist
+
+### 7. Mock Outputs for Validation
+
+**Decision**: All Terragrunt dependencies include `mock_outputs` with `mock_outputs_allowed_terraform_commands = ["init", "plan", "validate"]`.
+
+**Rationale**:
+- **Validation without full deployment**: Can validate configurations without deploying dependencies
+- **CI/CD efficiency**: Validation pipelines don't need full infrastructure
+- **Developer experience**: Developers can validate changes locally without deploying
+- **Explicit real outputs**: `skip_outputs = false` ensures real outputs are used during `apply`
+
+### 8. Naming Conventions
+
+**Decision**: Consistent naming patterns across all resources.
+
+**Patterns**:
+- Resources: `${org}-${env}-${component}` (e.g., `datashift-dev-collibra-dq-standalone`)
+- ALB/Target Groups: Shortened with abbreviations (`ds-${env}-dq-${vpc-suffix}`) to meet AWS 32-char limit
+- IAM roles: Include VPC suffix to avoid collisions between stacks
+- Security groups: `${org}-${env}-${component}-sg`
+
+**Rationale**:
+- **Predictability**: Engineers can find resources by name pattern
+- **AWS constraints**: Some resources have character limits (ALB names: 32 chars)
+- **Collision avoidance**: VPC suffixes prevent name conflicts between stacks
+
+## Prerequisites
+
+### Required Tools
+
+Install these tools locally (and in CI if you run validation there):
+
+| Tool | Purpose | Minimum Version |
+|------|---------|----------------|
+| **Terraform** | Infrastructure provisioning | >= 1.5.0 |
+| **Terragrunt** | Terraform orchestration and DRY config | Latest |
+| **AWS CLI** | AWS API access and credential management | v2.x |
+| **kubectl** | Kubernetes/EKS access (for Soda Agent stack) | Latest |
+| **Helm** | Kubernetes package manager (optional, for debugging) | v3.x |
+| **jq** | JSON processing in scripts (optional) | Latest |
+
+### AWS Account Setup
+
+1. **AWS Account**: Access to an AWS account with appropriate permissions
+2. **IAM Permissions**: Your AWS credentials need permissions to create:
+   - VPC, subnets, route tables, NAT gateways
+   - EC2 instances, security groups, IAM roles
+   - EKS clusters (for Soda Agent stack)
+   - RDS databases (for Collibra DQ stack)
+   - S3 buckets, DynamoDB tables
+   - Application Load Balancers
+   - CloudWatch Logs
+
+3. **AWS Credentials**: Configure one of:
+   - AWS Profile: `~/.aws/config` and `~/.aws/credentials`
+   - Access Keys: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` environment variables
+
+## Quick Start
+
+### 1. Clone and Setup
 
 ```bash
-# Set required environment variables
-export SODA_API_KEY_ID="your-api-key"
-export SODA_API_KEY_SECRET="your-api-secret"
-
-# Deploy Soda Agent stack
-./deploy-stack.sh soda-agent dev
-
-# For production
-./deploy-stack.sh soda-agent prod
+git clone <repository-url>
+cd DQ-Infrastructures
 ```
 
-**What gets deployed:**
-1. Bootstrap (if missing)
-2. VPC with public/private subnets
-3. VPC Endpoints (S3, SSM, ECR, STS, CloudWatch Logs)
-4. Security Groups (Ops)
-5. EKS Cluster with managed node groups
-6. EC2 Ops Instance
-7. EKS Access Configuration
-8. Soda Agent (Helm chart)
-
-### **Environment Variables**
-
-**Required Variables**:
-```bash
-export SODA_API_KEY_ID="your-api-key"
-export SODA_API_KEY_SECRET="your-api-secret"
-```
-
-**Optional Variables** (for separate image registry credentials):
-```bash
-# Only set these if you want to use different credentials for image registry
-export SODA_IMAGE_APIKEY_ID="your-image-key"
-export SODA_IMAGE_APIKEY_SECRET="your-image-secret"
-```
-
-**Image Registry Credentials Behavior** (1.2.0+):
-- **Default**: If `SODA_IMAGE_APIKEY_ID` is not set, the agent automatically uses `SODA_API_KEY_ID` and `SODA_API_KEY_SECRET` for both Soda Cloud and image registry authentication
-- **Separate Credentials**: If `SODA_IMAGE_APIKEY_ID` is set, those credentials are used exclusively for image registry
-- **Configuration**: This fallback logic is implemented in `env/*/eu-west-1/addons/soda-agent/terragrunt.hcl` using locals
-
-**Other Optional Variables**:
-```bash
-export SODA_CLOUD_REGION="eu"  # or "us" (defaults to "eu")
-export SODA_LOG_FORMAT="raw"   # or "json" (defaults to "raw")
-export SODA_LOG_LEVEL="INFO"   # ERROR, WARN, INFO, DEBUG, or TRACE (defaults to "INFO")
-```
-
-### **Destroy Soda Agent Stack**
+### 2. Configure Environment Variables
 
 ```bash
-# Destroy Soda Agent stack (keeps shared resources)
-./destroy-stack.sh soda-agent dev
+# Copy the example template
+cp scripts/set-env.example.sh scripts/set-env.sh
 
-# Destroy bootstrap (only after both stacks are destroyed)
-./destroy-stack.sh soda-agent dev --destroy-bootstrap
+# Edit with your values
+vim scripts/set-env.sh  # or use your preferred editor
 ```
 
-## **Getting Help**
+Required variables in `scripts/set-env.sh`:
+- `TF_VAR_environment` (dev or prod)
+- `TF_VAR_region` (eu-west-1, us-east-1, or eu-central-1)
+- AWS credentials (profile or access keys)
+- Application-specific secrets (see [Environment Variables](#environment-variables))
 
-1. **Use unified deployment scripts** - `./deploy-stack.sh` and `./destroy-stack.sh` handle dependencies automatically
-2. **Check this README** for common issues and solutions
-3. **Bootstrap is automatic** - created automatically if missing during deployment
-4. **Check environment variables** - ensure all required variables are set
-5. **Verify AWS resources** - ensure no conflicts with existing infrastructure
-6. **Check Terraform state** - ensure state is consistent
-7. **Package upload optimization** - uploads are automatically optimized (prevents re-uploads)
-8. **Destroy stacks safely** - use `./destroy-stack.sh` which preserves shared resources
-
-## **Recent Improvements**
-
-### **Configuration Structure (2024)**
-- **Hierarchical Configuration**: Reorganized Terragrunt configs with repo → environment → region hierarchy
-- **DRY Principle**: Organization name defined once at repo root, inherited by all environments
-- **Multi-Region Ready**: Region-specific configs make it easy to add new AWS regions
-
-### **Security Enhancements**
-- **Environment-Specific Security**: Prod EKS endpoint is private-only, dev can be restricted to CIDRs
-- **CloudWatch Logging**: EKS control plane logging enabled (7 days dev, 30 days prod)
-- **Encryption**: EKS secrets encryption at rest enabled
-- **VPC Flow Logs**: Enabled for prod environment
-
-### **Operational Improvements**
-- **Pre-commit Hooks**: Automated Terraform validation, formatting, and security scanning
-- **Resource Tagging**: Standardized common tags across all resources
-- **Environment-Specific Configs**: Different instance sizes, node counts for dev vs prod
-- **Cost Optimization**: Prod uses multiple NAT gateways for HA, dev uses single NAT
-
-### **Soda Agent Module Updates (January 2025)**
-- **Namespace Creation**: Added explicit `kubernetes_namespace` resource to ensure namespace exists before creating secrets
-- **Dependency Management**: Improved resource dependencies to prevent race conditions
-- **Helm Configuration**: Disabled `create_namespace` in Helm release since we create it explicitly
-- **Image Registry Credentials (1.2.0+)**:
-  - **Fallback Configuration**: Image registry credentials automatically fall back to main API keys if `SODA_IMAGE_APIKEY_ID` is not set
-  - **Configuration**: Uses locals in Terragrunt to compute credentials with fallback logic
-  - **Implementation**: 
-    ```hcl
-    locals {
-      api_key_id     = get_env("SODA_API_KEY_ID", "")
-      api_key_secret = get_env("SODA_API_KEY_SECRET", "")
-      image_credentials_id     = get_env("SODA_IMAGE_APIKEY_ID", local.api_key_id)
-      image_credentials_secret = get_env("SODA_IMAGE_APIKEY_SECRET", local.api_key_secret)
-    }
-    ```
-  - **Benefits**: Simplifies configuration - same API keys can be used for both Soda Cloud and image registry (default behavior per Soda documentation)
-  - **Applied to**: Both dev and prod environments
-- **Chart Version Pinning**:
-  - **Current Version**: `1.3.13` (pinned for both dev and prod)
-  - **Upgrade Path**: Successfully upgraded from `1.2.4` to `1.3.13` via fresh install
-  - **Status**: ✅ Agent operational with new version, processing instructions successfully
-  - **Bug Fixes**: Resolved NullPointerException instruction fetching bug present in `1.2.4`
-- **Configuration Consistency**:
-  - **Dev and Prod Alignment**: Both environments now use identical configuration structure
-  - **Image Credentials**: Same fallback logic implemented in both environments
-  - **Version Management**: Consistent chart version pinning across environments
-
-### **Terragrunt Configuration Fixes**
-- **Mock Outputs**: Added proper mock outputs for all dependency blocks to enable validation
-- **Mock Outputs During Destroy**: Updated `mock_outputs_allowed_terraform_commands` to include `"destroy"` to allow dependencies to work when parent resources are already destroyed
-- **Dependency Ordering**: Ensured correct `dependencies` and `dependency` block usage
-- **Configuration Validation**: Fixed corrupted terragrunt.hcl files that contained error messages
-- **Orphaned Resource Cleanup**: Added comprehensive troubleshooting guide for stuck VPC destruction and manual cleanup procedures
-
-### **Deployment Scripts**
-- **Automated Deployment**: Enhanced deployment scripts with better error handling
-- **Phase-based Deployment**: Improved phase-by-phase deployment with proper dependency resolution
-- **Bootstrap Safety**: Added multiple safety checks and confirmations for bootstrap process
-- **Bootstrap Destruction**: Added `destroy-bootstrap.sh` script with explicit confirmation requirements
-- **Bootstrap Re-run Support**: Bootstrap script now handles already-enabled bootstrap gracefully
-
-### **Bootstrap Module Enhancements**
-- **S3 Lifecycle Management**: Automatic transition to Glacier after 30 days, deletion after 90 days
-- **S3 Lifecycle Filter**: Added required `filter {}` blocks to lifecycle rules (AWS provider requirement)
-- **DynamoDB Point-in-Time Recovery**: Enabled for disaster recovery
-- **DynamoDB Encryption**: Server-side encryption enabled
-- **Consistent Tagging**: Uses common_tags from parent configuration
-- **Provider Version**: Updated to match other modules (>= 5.61.0, < 6.0.0)
-- **Bootstrap Destruction Script**: Added `destroy-bootstrap.sh` for safe bootstrap resource cleanup
-- **Standalone Configuration**: Bootstrap uses direct value construction to avoid nested include issues
-
-### **Ops Infrastructure Fine-Tuning (January 2025)**
-- **Configuration Architecture**:
-  - Uses direct path includes to env-level `root.hcl` (e.g., `../../../root.hcl` for 3-level deep modules)
-  - Proper state management with `remote_state`, `provider`, and `backend` generation blocks
-  - Region extraction from path for consistency
-- **Security Group Hardening**:
-  - Restricted HTTPS egress from `0.0.0.0/0` to VPC CIDR block (uses VPC endpoints for all AWS service communication)
-  - Added HTTP (port 80) egress for package updates to AWS repositories
-  - Improved security group descriptions and rule documentation
-  - All traffic now routes through VPC endpoints for enhanced security and cost control
-- **EC2 Instance Enhancements**:
-  - Added `AmazonEC2ContainerRegistryReadOnly` IAM policy for ECR access (pulling container images)
-  - Added `CloudWatchLogsFullAccess` IAM policy for better observability and log management
-  - Enhanced root block device configuration with explicit GP3 IOPS (3000) and throughput (125 MB/s)
-  - Added `delete_on_termination = true` for proper cleanup
-  - Improved instance metadata security with `http_put_response_hop_limit = 1` and `instance_metadata_tags = enabled`
-  - **CPU Credit Specification**: Dev uses `unlimited` credits (prevents CPU throttling), Prod uses `standard` credits (predictable costs)
-  - **Instance Placement**: Explicit tenancy configuration for cost optimization
-  - **EBS Optimization**: Explicit configuration for cost savings
-- **Cost Optimizations**:
-  - **Dev**: `t3.micro` instance (smallest available), unlimited CPU credits
-  - **Prod**: `t3.small` instance, standard CPU credits
-  - GP3 volumes with baseline IOPS/throughput (minimum for dev, baseline for prod)
-- **Applied to Both Environments**: All improvements applied consistently to both dev and prod environments
-
-### **EKS Cluster Fine-Tuning (January 2025)**
-- **Configuration Architecture**:
-  - Uses direct path includes to env-level `root.hcl` (e.g., `../../root.hcl` for 2-level deep modules)
-  - Proper state management with `remote_state`, `provider`, and `backend` generation blocks
-  - Region extraction from path for consistency
-- **Node Group Enhancements**:
-  - **Disk Configuration**: GP3 disks with explicit IOPS/throughput (20GB dev, 50GB prod)
-  - **Instance Metadata Security**: IMDSv2 required, hop limit set to 2
-  - **Node Labels**: Environment, NodeGroup, ManagedBy for better pod scheduling
-  - **Update Configuration**: Zero-downtime updates (50% dev, 33% prod max unavailable)
-- **Security Improvements**:
-  - **Encryption**: Encrypts `secrets` at rest (AWS EKS limitation - only secrets supported)
-  - **Metadata Options**: IMDSv2 required on all nodes
-- **Cluster Addons**:
-  - **CoreDNS**: Resource limits configured (dev: 200m CPU/256Mi mem, prod: 500m CPU/512Mi mem)
-  - **VPC CNI**: Prefix delegation enabled for better IP management
-  - **EBS CSI Driver**: Added for persistent volumes support
-- **Cost Optimizations**:
-  - **Dev**: `t3.micro` instances, `min_size=0` (can scale to zero with cluster autoscaler), SPOT pricing
-  - **Prod**: `t3.small` instances (reduced from t3.medium/t3.large), SPOT pricing (~70% savings)
-  - **Documentation**: Added Cluster Autoscaler and kube-downscaler installation instructions in config files
-- **Network Connectivity**:
-  - **External Data Sources**: EKS nodes can reach external data sources via NAT Gateway
-  - **Default Egress**: EKS module provides default egress rules (all outbound allowed)
-  - **Traffic Flow**: Pods → Node SG → NAT Gateway → Internet → External Data Sources
-
-### **Cluster Capacity and Resource Configuration (January 2025)**
-- **Current Configuration**:
-  - **Node Type**: `t3.small` (2 vCPU, 2GB RAM)
-  - **Capacity**: Supports up to 6 scans in parallel
-  - **Resource Allocation**:
-    - Soda Agent Orchestrator: 500m CPU, 512Mi memory
-    - CoreDNS (2 pods): 200m CPU, 140Mi memory
-    - System pods (VPC CNI, kube-proxy): ~150m CPU
-  - **Available Resources**: ~1.15 CPU cores, ~1.3GB memory available for scan jobs
-- **Resource Monitoring**:
-  ```bash
-  # Check node capacity
-  kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.capacity.cpu}{"\t"}{.status.capacity.memory}{"\n"}{end}'
-  
-  # Check allocated resources
-  kubectl describe node | grep -A 10 "Allocated resources:"
-  
-  # Check pod resource requests/limits
-  kubectl get pods --all-namespaces -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{.spec.containers[0].resources.requests.cpu}{"\t"}{.spec.containers[0].resources.requests.memory}{"\n"}{end}'
-  ```
-- **Scaling Considerations**:
-  - Current setup is sufficient for up to 6 parallel scans
-  - If more capacity is needed, consider:
-    - Increasing `max_size` in node group configuration
-    - Upgrading to `t3.medium` (2 vCPU, 4GB RAM) for more memory
-    - Installing Cluster Autoscaler for automatic scaling
-
-### **Soda Agent Instruction Fetching Bug (January 2025) - ✅ RESOLVED**
-
-- **Issue**: Agent version `v2.1.19` (image: `registry.cloud.soda.io/sodadata/agent-orchestrator:v2.1.19`) experienced `NullPointerException` when fetching instructions from Soda Cloud
-- **Status**: ✅ **RESOLVED** - Fixed by upgrading to chart version `1.3.13` (agent image `v2.2.2`)
-- **Resolution Date**: January 24, 2026
-- **Resolution Method**: Fresh install with upgraded chart version
-- **Previous Symptoms** (now resolved):
-  - Agent pod was running and healthy (1/1 Ready, 0 restarts)
-  - Agent successfully registered and connected to Soda Cloud
-  - Repeated errors in logs: `NullPointerException: Cannot invoke "io.soda.agent.orchestrator.cloud.api.CoreAgentInstructionDTO.getId()" because "dto" is null`
-  - Agent could not receive new instructions (including data source connection instructions)
-- **Previous Root Cause**: Soda Cloud API returned null entries in the instructions array, and the agent code didn't filter nulls before processing
-- **Current Status**: 
-  - ✅ Agent successfully fetching and processing instructions
-  - ✅ Multiple instructions completed successfully
-  - ✅ No NullPointerException errors in logs
-  - ✅ Ready for data source connections (Snowflake, etc.)
-- **Troubleshooting Steps**:
-  1. **Check Agent Status**:
-     ```bash
-     kubectl get pods -n soda-agent
-     kubectl logs -n soda-agent -l app.kubernetes.io/name=soda-agent --tail=50
-     ```
-  2. **Verify Agent Registration**:
-     ```bash
-     kubectl logs -n soda-agent -l app.kubernetes.io/name=soda-agent | grep -E "(registered|Connected|Agent ID)"
-     ```
-  3. **Check for Successful Instruction Fetches**:
-     ```bash
-     kubectl logs -n soda-agent -l app.kubernetes.io/name=soda-agent | grep -E "(Fetched.*instructions|Received cloud instruction)"
-     ```
-  4. **Restart Agent Pod** (temporary workaround):
-     ```bash
-     kubectl delete pod -n soda-agent -l app.kubernetes.io/name=soda-agent
-     ```
-  5. **Check Agent Version**:
-     ```bash
-     kubectl describe pod -n soda-agent -l app.kubernetes.io/name=soda-agent | grep "Image:"
-     ```
-- **Solutions**:
-  1. **Contact Soda Support**: Report the bug with:
-     - Agent version: `v2.1.19`
-     - Error: `NullPointerException` in `CloudMapper.toInstruction()` at line 63
-     - Agent name: `datashift-dev-eu-west-1-agent` (or your agent name)
-     - Agent ID: Check logs for "Agent registered successfully in Soda Cloud: '<agent-id>'"
-  2. **Check for Newer Agent Version**:
-     - Current chart version: `""` (latest)
-     - Current agent image: `registry.cloud.soda.io/sodadata/agent-orchestrator:v2.1.19`
-     - Check available chart versions:
-       ```bash
-       helm repo update soda-agent
-       helm search repo soda-agent/soda-agent --versions
-       ```
-     - Check available agent image versions (requires Soda registry access):
-       ```bash
-       # Note: This requires authentication to registry.cloud.soda.io
-       # Check Soda documentation for available agent versions
-       ```
-     - Update chart version in `env/*/eu-west-1/addons/soda-agent/terragrunt.hcl`:
-       ```hcl
-       chart_version = "X.Y.Z"  # Specify newer version if available
-       ```
-     - After updating, redeploy:
-       ```bash
-       cd env/dev/eu-west-1/addons/soda-agent
-       terragrunt apply
-       ```
-  3. **Verify in Soda Cloud UI**:
-     - Confirm agent appears as online/connected
-     - Verify data source configuration is correct
-     - Check if instructions are queued (they won't process until bug is fixed)
-- **Resolution**: Upgraded to chart version `1.3.13` which includes fixes for instruction handling
-- **Note**: The bug was in the Soda Agent application code (v2.1.19). The fix was included in later versions (v2.2.2+).
-
-## **Soda Agent Deployment Requirements (Official Documentation)**
-
-### **Prerequisites**
-- AWS account with permissions to create/access EKS cluster
-- `kubectl` v1.22 or v1.23 installed
-- `helm` installed
-- Enterprise plan (self-hosted agents require Enterprise plan; contact https://www.soda.io/contact)
-
-### **Network Requirements - URLs to Whitelist**
-
-**Required Outbound Access (Port 443/HTTPS)**:
-
-**For Soda EU Region** (`https://cloud.soda.io`):
-- `cloud.soda.io` (Soda Cloud API)
-- `collect.soda.io` (Soda Cloud collector)
-- `registry.cloud.soda.io` (Soda container registry)
-- `soda-cloud-platform-registry.s3.eu-west-1.amazonaws.com` (Soda platform registry)
-- `*.docker.io` (Docker Hub for base images)
-
-**For Soda US Region** (`https://cloud.us.soda.io`):
-- `cloud.us.soda.io` (Soda Cloud API)
-- `collect.soda.io` (Soda Cloud collector)
-- `registry.us.soda.io` (Soda container registry)
-- `soda-cloud-us-platform-registry.s3.us-west-2.amazonaws.com` (Soda platform registry)
-- `*.docker.io` (Docker Hub for base images)
-
-**Current Configuration Status**:
-- ✅ EKS node security group allows all outbound traffic (0.0.0.0/0) on all ports
-- ✅ Port 443 accessible to `cloud.soda.io` and `collect.soda.io` (verified)
-- ✅ DNS resolution working for all required FQDNs
-- ✅ Network path: Pods → Node SG → NAT Gateway → Internet → Soda Cloud
-
-**Note**: The agent only requires outbound communication. It polls Soda Cloud for instructions, and when Soda Cloud needs to deliver instructions, the agent opens a bidirectional channel. No inbound rules are required.
-
-### **System Requirements**
-- **Minimum Cluster Size**: 2 CPU and 2GB RAM
-- **Capacity**: Sufficient to run up to 6 scans in parallel
-- **Current Configuration**: `t3.small` (2 vCPU, 2GB RAM) - ✅ Meets requirements
-
-**Performance Optimization**:
-- Fine-tune resources using `soda.agent.resources` and `soda.scanlauncher.resources` parameters
-- Adding more resources to scan-launcher can improve scan times by up to 30%
-- Consider adding more nodes or cluster autoscaler for larger workloads
-- **Reference**: Soda-hosted agent uses:
-  ```yaml
-  soda:
-    agent:
-      resources:
-        limits:
-          cpu: 250m
-          memory: 375Mi
-        requests:
-          cpu: 250m
-          memory: 375Mi
-  ```
-
-### **Helm Chart Repository**
-- **Official Repository URL**: `https://helm.soda.io/soda-agent/`
-- **Repository Name**: `soda-agent` (used in configuration)
-- **Chart Name**: `soda-agent`
-- **Current Status**: ✅ Repository is configured locally (`helm repo list` shows `soda-agent`)
-- **Configuration**: 
-  - Terragrunt config uses `chart_repo = "soda-agent"` (repository name)
-  - Helm provider automatically resolves the repository name to the configured URL
-  - To add/update the repository manually: `helm repo add soda-agent https://helm.soda.io/soda-agent/`
-
-### **Cloud Endpoint Configuration**
-- **US Region**: `https://cloud.us.soda.io`
-- **EU/Other Regions**: `https://cloud.soda.io`
-- **Current Configuration**: Configurable via `SODA_CLOUD_REGION` environment variable (defaults to EU)
-- **Critical**: The endpoint must match the region where your Soda Cloud account was created
-
-### **Resource Configuration (Optional)**
-To customize resource limits and requests, you can add the following to your Helm values (currently not exposed in Terraform module, but can be added):
-
-```yaml
-soda:
-  agent:
-    resources:
-      limits:
-        cpu: x
-        memory: x
-      requests:
-        cpu: x
-        memory: x
-  scanlauncher:
-    resources:
-      limits:
-        cpu: x
-        memory: x
-      requests:
-        cpu: x
-        memory: x
-```
-
-**Note**: Allocating too many resources may be costly relative to the small benefit of improved scan times. The default configuration (2 CPU, 2GB RAM) is sufficient for most use cases.
-
-### **Troubleshooting Deployment Issues (Official)**
-
-**Problem**: Agent not visible in Soda Cloud after deployment
-
-**Solution**: The `soda.cloud.endpoint` value must correspond with the region you selected when you signed up for a Soda Cloud account:
-- Use `https://cloud.us.soda.io` for the United States
-- Use `https://cloud.soda.io` for all else
-
-**Problem**: Network connectivity issues
-
-**Solution**: Define outgoing port 443 and allowlist the fully-qualified domain names:
-- `cloud.us.soda.io` (for US region) OR `cloud.soda.io` (for EU region)
-- AND `collect.soda.io` (required for all regions)
-- Plus registry URLs and S3 buckets (see "Network Requirements" above)
-
-**Problem**: `UnauthorizedOperation: You are not authorized to perform this operation`
-
-**Solution**: Your user profile is not authorized to create the cluster. Contact your AWS Administrator to request the appropriate permissions.
-
-**Current Configuration Status**:
-- ✅ Cloud endpoint: Configurable via `SODA_CLOUD_REGION` env var (defaults to EU: `https://cloud.soda.io`)
-- ✅ Network access: All required FQDNs are accessible (verified via connectivity tests)
-- ✅ Security groups: EKS nodes allow all outbound traffic (0.0.0.0/0)
-
-## **Collibra DQ Standalone Stack Deployment**
-
-### **Quick Start**
-
-Deploy the entire Collibra DQ Standalone stack:
+### 3. Source Environment and Deploy
 
 ```bash
-# Set required environment variables
-export COLLIBRA_DQ_ADMIN_PASSWORD="<secure-password>"
-export COLLIBRA_DQ_LICENSE_KEY="<license-key>"
+# Source the environment variables (IMPORTANT: must be in same shell)
+source scripts/set-env.sh
 
-# Optional: Package uploads are automatically optimized (prevents re-uploads)
-# To force a re-upload when updating the package, temporarily set this to false or use terraform taint
-export COLLIBRA_DQ_SKIP_PACKAGE_UPLOAD=true
-
-# Deploy Collibra DQ stack
-./deploy-stack.sh collibra-dq dev
-
-# For production
-./deploy-stack.sh collibra-dq prod
+# Deploy a stack
+./deploy-stack.sh collibra-dq
+# or
+./deploy-stack.sh soda-agent
 ```
 
-**What gets deployed:**
-1. Bootstrap (if missing)
-2. VPC and VPC Endpoints (reused if exists)
-3. Collibra DQ Security Group
-4. RDS Security Group
-5. RDS PostgreSQL Database
-6. Package Upload to S3 (automatically optimized - prevents re-uploads)
-7. EC2 Instance with Collibra DQ (includes PostgreSQL client for testing)
-8. ALB Security Group
-9. Application Load Balancer (HTTP by default, HTTPS when certificate provided)
-10. Target Group Attachment
-
-**Package Upload Optimization:**
-- Package uploads are automatically optimized - Terraform ignores file content changes to prevent unnecessary re-uploads
-- The S3 object resource remains in state and won't be destroyed
-- **To force a re-upload** (e.g., when updating the package file):
-  - Temporarily set `COLLIBRA_DQ_SKIP_PACKAGE_UPLOAD=false` and run apply, or
-  - Use `terraform taint` on the S3 object resource
-- Saves 20+ minutes on redeployments by avoiding large file uploads
-
-**Recent Improvements:**
-- ✅ PostgreSQL client (`psql`) automatically installed for RDS testing
-- ✅ Health check accepts HTTP 200 and 302 (redirect) responses
-- ✅ HTTPS support (conditional - enabled when ACM certificate provided)
-- ✅ Automatic package structure detection (handles `owl/` subdirectory)
-- ✅ Improved error handling and deployment script reliability
-- ✅ RDS connectivity testing helper script
-
-### **Environment Variables**
-
-**Required:**
-```bash
-export COLLIBRA_DQ_ADMIN_PASSWORD="<secure-password>"  # Must meet password policy
-export COLLIBRA_DQ_LICENSE_KEY="<license-key>"
-```
-
-**Optional:**
-```bash
-export COLLIBRA_DQ_LICENSE_NAME="collibra-partners"     # Defaults to this
-export COLLIBRA_DQ_OWL_BASE="/opt/collibra-dq"          # Defaults to this
-export COLLIBRA_DQ_SPARK_PACKAGE="spark-3.5.6-bin-hadoop3.tgz"
-export COLLIBRA_DQ_PACKAGE_FILENAME="dq-2025.11-SPARK356-JDK17-package-full.tar"
-export COLLIBRA_DQ_SKIP_PACKAGE_UPLOAD="true"           # Optional - uploads are automatically optimized
-
-# HTTPS Configuration (optional)
-export COLLIBRA_DQ_ACM_CERTIFICATE_ARN="arn:aws:acm:..."  # Enable HTTPS when set
-export COLLIBRA_DQ_DOMAIN_NAME="collibra-dq-dev.example.com"  # Optional domain name
-```
-
-### **Package File**
-
-Place the Collibra DQ installation package in:
-```
-packages/collibra-dq/<package-filename>
-```
-
-The deployment script will automatically upload it to S3 if found locally.
-
-### **Destroy Collibra DQ Stack**
+### 4. Verify Deployment
 
 ```bash
-# Destroy Collibra DQ stack (keeps shared resources)
-./destroy-stack.sh collibra-dq dev
+# Get ALB URL (Collibra DQ)
+cd env/stack/collibra-dq/addons/collibra-dq-standalone/alb
+terragrunt output load_balancer_dns_name
 
-# Destroy bootstrap (only after both stacks are destroyed)
-./destroy-stack.sh collibra-dq dev --destroy-bootstrap
+# Check EKS cluster (Soda Agent)
+cd env/stack/soda-agent/eks
+terragrunt output cluster_endpoint
 ```
 
-**Warning**: Destroying the stack will delete the RDS database and all Collibra DQ data!
+## Deployment Guide
 
-### **Testing and Verification**
+### Deployment Phases
 
-After deployment, test all components:
+Both stacks follow a phased deployment approach where each phase depends on previous phases completing successfully.
 
-```bash
-# Comprehensive test
-./scripts/test-collibra-dq-deployment.sh dev
+#### Collibra DQ Stack Deployment Order
 
-# Quick status check
-./scripts/utils/check-deployment-status.sh dev
+1. **Bootstrap** (shared): Creates S3 bucket for Terraform state and DynamoDB table for state locking
+2. **VPC**: Creates VPC, public/private subnets, internet gateway, NAT gateway, route tables
+3. **VPC Endpoints**: Creates VPC endpoints for SSM, S3 (required for EC2 to download packages)
+4. **ALB Security Group**: Security group for Application Load Balancer
+5. **Collibra DQ Security Group**: Security group for EC2 instance (depends on ALB SG)
+6. **RDS Security Group**: Security group for PostgreSQL database (allows traffic from EC2 SG)
+7. **RDS Database**: PostgreSQL database for Collibra DQ metastore
+8. **Package Upload**: Uploads Collibra DQ package from `packages/collibra-dq/` to S3
+9. **EC2 Instance**: Deploys EC2 instance with Collibra DQ (waits for package upload via Terragrunt dependency)
+10. **Application Load Balancer**: Creates ALB with HTTP listener and target group
+11. **Target Group Attachment**: Attaches EC2 instance to ALB target group
 
-# Test RDS connection (via SSM)
-cd env/dev/eu-west-1/addons/collibra-dq-standalone
-INSTANCE_ID=$(terragrunt output -raw instance_id)
-aws ssm start-session --target $INSTANCE_ID --region eu-west-1
-# Then run: /usr/local/bin/test-rds-connection.sh
-```
+#### Soda Agent Stack Deployment Order
 
-### **HTTPS Configuration**
+1. **Bootstrap** (shared): Same as above
+2. **VPC**: Creates VPC and networking (separate from Collibra DQ VPC)
+3. **VPC Endpoints**: Creates endpoints for EKS requirements (ECR, STS, CloudWatch Logs, etc.)
+4. **Ops Security Group**: Security group for ops EC2 instance
+5. **EKS Cluster**: Creates EKS cluster with managed node groups
+6. **Ops EC2 Instance**: EC2 instance for operational tasks and EKS access
+7. **EKS Access Configuration**: IAM roles and RBAC for ops instance to access EKS
+8. **Soda Agent**: Helm chart deployment into EKS cluster
 
-By default, the ALB uses HTTP for dev/testing. To enable HTTPS:
-
-1. Request an ACM certificate for your domain
-2. Set `COLLIBRA_DQ_ACM_CERTIFICATE_ARN` environment variable
-3. Redeploy the ALB - HTTPS will be automatically enabled
-
-When HTTPS is enabled:
-- HTTPS listener on port 443 with TLS termination
-- HTTP automatically redirects to HTTPS (301 redirect)
-- TLS 1.3 security policy
-
-### **Scaling**
-
-**Vertical Scaling (Scale Up)** - Easiest:
-- Update `instance_type` in `terragrunt.hcl` (e.g., `m5.large` → `m5.xlarge`)
-- Redeploy: `terragrunt apply`
-
-**Horizontal Scaling (Scale Out)** - For HA:
-- Requires Auto Scaling Group implementation
-- See detailed documentation for architecture changes
-
-### **Detailed Documentation**
-
-For detailed Collibra DQ documentation, see: [env/dev/eu-west-1/addons/collibra-dq-standalone/README.md](env/dev/eu-west-1/addons/collibra-dq-standalone/README.md)
-
-
-## **Upgrading Soda Agent**
-
-### **Overview**
-The Soda Agent is deployed as a Helm chart. To take advantage of new features and improvements, you can upgrade to newer versions. Upgrades use Kubernetes' default `RollingUpdate` strategy, so there is **no downtime** associated with upgrading.
-
-### **Version Information**
-
-**Latest Available Version**: `1.3.14` (released January 20, 2026)
-- **ArtifactHub**: https://artifacthub.io/packages/helm/soda-agent/soda-agent
-- **Recent Versions**:
-  - `1.3.14` (January 20, 2026)
-  - `1.3.13` (January 7, 2026)
-  - `1.3.12` (December 30, 2025)
-
-**Current Deployment**: `1.3.13` (deployed January 24, 2026)
-- **App Version**: `1.13.1`
-- **Status**: Successfully upgraded from `1.2.4` to `1.3.13`
-- **Agent Status**: ✅ Operational and processing instructions successfully
-
-**Note**: The current configuration uses `chart_version = "1.3.13"` (pinned version) for both dev and prod environments. This ensures consistent deployments across environments.
-
-### **Finding Current Version and Upgrade Information**
-
-1. **Check Current Deployment**:
-   ```bash
-   # List Helm releases to see current version
-   helm list -n soda-agent
-   
-   # Example output:
-   # NAME        NAMESPACE   REVISION   CHART              APP VERSION
-   # soda-agent  soda-agent  1          soda-agent-1.2.4  1.12.8
-   
-   # Get current values (including API keys)
-   helm get values -n soda-agent soda-agent
-   ```
-
-2. **Check Available Versions**:
-   ```bash
-   # Update Helm repository
-   helm repo update soda-agent
-   
-   # Search for latest version
-   helm search repo soda-agent/soda-agent --versions
-   
-   # Or search ArtifactHub
-   helm search hub soda-agent
-   
-   # Or visit: https://artifacthub.io/packages/helm/soda-agent/soda-agent
-   ```
-
-3. **Verify Kubernetes Context**:
-   ```bash
-   # Check which cluster you're accessing
-   kubectl config get-contexts
-   
-   # Switch context if needed
-   kubectl config use-context <cluster-name>
-   ```
-
-### **Upgrading via Terraform/Terragrunt (Recommended)**
-
-The recommended way to upgrade is through Terraform/Terragrunt, which ensures configuration consistency:
-
-1. **Update Chart Version**:
-   
-   **Option A: Pin to Latest Version** (Recommended for stability):
-   ```hcl
-   # In env/*/eu-west-1/addons/soda-agent/terragrunt.hcl
-   chart_version = "1.3.14"  # Pin to latest stable version
-   ```
-   
-   **Option B: Use Latest Available** (Gets newest on each apply):
-   ```hcl
-   # In env/*/eu-west-1/addons/soda-agent/terragrunt.hcl
-   chart_version = ""  # Empty = use latest available at deployment time
-   ```
-   
-   **Current Configuration**: Uses `chart_version = "1.3.13"` (Option A - pinned version)
-   
-   **Recommendation**: Pinned versions are recommended for production environments to ensure consistent deployments. Both dev and prod are currently pinned to `1.3.13`.
-
-2. **Apply Changes**:
-   ```bash
-   cd env/dev/eu-west-1/addons/soda-agent
-   terragrunt plan   # Review changes (should show chart version update)
-   terragrunt apply  # Apply upgrade
-   ```
-
-   **Example: Upgrading from 1.2.4 to 1.3.14**:
-   ```bash
-   # 1. Update chart_version in terragrunt.hcl
-   # chart_version = "1.3.14"
-   
-   # 2. Review the plan
-   cd env/dev/eu-west-1/addons/soda-agent
-   terragrunt plan
-   
-   # 3. Apply the upgrade (no downtime - RollingUpdate)
-   terragrunt apply
-   
-   # 4. Verify the upgrade
-   helm list -n soda-agent
-   kubectl get pods -n soda-agent
-   ```
-
-3. **Verify Upgrade**:
-   ```bash
-   # Check pod status
-   kubectl get pods -n soda-agent
-   
-   # Check logs
-   kubectl logs -n soda-agent -l app.kubernetes.io/name=soda-agent --tail=50
-   
-   # Verify in Soda Cloud UI
-   # Navigate to: Your Avatar > Agents
-   ```
-
-### **Upgrading via Helm CLI (Alternative)**
-
-If you need to upgrade directly via Helm (not recommended for infrastructure managed by Terraform):
+### Deployment Commands
 
 ```bash
-helm upgrade soda-agent soda-agent/soda-agent \
-  --set soda.agent.name=datashift-dev-eu-west-1-agent \
-  --set soda.cloud.endpoint=https://cloud.soda.io \
-  --set soda.apikey.id=*** \
-  --set soda.apikey.secret=**** \
-  --set soda.agent.logFormat=raw \
-  --set soda.agent.loglevel=INFO \
-  --namespace soda-agent
-```
+# Full stack deployment
+source scripts/set-env.sh
+./deploy-stack.sh collibra-dq
+./deploy-stack.sh soda-agent
 
-**Note**: If using Terraform, prefer `terragrunt apply` to maintain state consistency.
+# Core-only deployment (skip application add-ons)
+./deploy-stack.sh collibra-dq --skip-addons
+./deploy-stack.sh soda-agent --skip-addons
 
-### **Version-Specific Upgrade Notes**
-
-#### **Upgrading to 1.3.x from 1.2.x**
-
-**Current Status**: ✅ Successfully upgraded from `1.2.4` to `1.3.13` (January 24, 2026)
-
-**Key Changes in 1.3.x**:
-- Continued improvements to instruction handling
-- Enhanced error handling and logging
-- Performance optimizations
-- Bug fixes (including fixes for instruction fetching issues)
-- Improved agent registration and state management
-
-**Upgrade Experience**:
-- **Initial Attempt**: Direct upgrade from `1.2.4` to `1.3.13` encountered agent ID mismatch issues
-- **Resolution**: Performed fresh install (deleted namespace and redeployed) which resolved the issue
-- **Result**: Agent successfully registered with new ID and is processing instructions correctly
-- **Status**: ✅ Operational with version `1.3.13`
-
-**Lessons Learned**:
-- If upgrading encounters agent ID issues, a fresh install may be necessary
-- Fresh install process: `helm uninstall`, `kubectl delete namespace`, then redeploy
-- New agent will register with a fresh ID in Soda Cloud
-- All previous agent state is cleared, allowing clean registration
-
-**Current Configuration**:
-- Chart version: `1.3.13` (pinned in both dev and prod)
-- App version: `1.13.1`
-- Agent status: ✅ Running and processing instructions successfully
-
-### **Upgrading from 1.1.x to 1.2.x+ (Breaking Changes)**
-
-Starting from version 1.2.0, all images are distributed using Soda's private container registry. Important changes:
-
-#### **1. Image Registry Authentication**
-
-**Option A: Use Existing API Keys (Default) - ✅ Current Configuration**
-- **Implementation**: Automatically uses main API keys for image registry if separate credentials are not provided
-- **Configuration**: Uses locals with fallback logic in `env/*/eu-west-1/addons/soda-agent/terragrunt.hcl`:
-  ```hcl
-  locals {
-    api_key_id     = get_env("SODA_API_KEY_ID", "")
-    api_key_secret = get_env("SODA_API_KEY_SECRET", "")
-    
-    # Fallback to main API keys if image credentials not provided
-    image_credentials_id     = get_env("SODA_IMAGE_APIKEY_ID", local.api_key_id)
-    image_credentials_secret = get_env("SODA_IMAGE_APIKEY_SECRET", local.api_key_secret)
-  }
-  ```
-- **Benefits**: Simplifies configuration - no need to set separate image credentials unless required
-- **Status**: ✅ Working correctly in both dev and prod environments
-
-**Option B: Use Separate Image Registry Credentials**
-- **Configuration**: Set `SODA_IMAGE_APIKEY_ID` and `SODA_IMAGE_APIKEY_SECRET` environment variables
-- **Behavior**: If set, these override the fallback and are used exclusively for image registry authentication
-- **Use Case**: When you want to use different credentials for image registry vs Soda Cloud API
-
-#### **2. Image Pull Secrets Configuration**
-
-- ✅ **Current Configuration**: Already compatible
-- The module uses `existingImagePullSecrets` (correct for 1.2.x+)
-- Configuration in: `module/application/helm/soda-agent/main.tf` (line 158)
-- If you have an existing secret, set `existing_image_pull_secret` in Terragrunt config
-
-#### **3. Cloud Region Property (New in 1.2.x)**
-
-**Current Status**: ⚠️ **Not yet implemented** - using `cloud_endpoint` instead
-
-The new `soda.cloud.region` property (values: `"eu"` or `"us"`) automatically sets the correct endpoint and registry. Currently, the module uses:
-- `soda.cloud.endpoint` (explicit endpoint URL)
-- `SODA_CLOUD_REGION` environment variable (for determining endpoint)
-
-**Future Enhancement**: The module could be updated to use `soda.cloud.region` instead of `soda.cloud.endpoint` for better compatibility with 1.2.x+ charts.
-
-**Current Workaround**: The existing `cloud_endpoint` configuration works correctly with 1.2.x+ charts.
-
-#### **4. Scan Launcher Naming**
-
-- ⚠️ **Note**: If you have custom `scanlauncher` configuration, it should be renamed to `scanLauncher` (camelCase)
-- **Current Configuration**: No custom scan launcher configuration, so no changes needed
-
-### **Upgrade Checklist**
-
-Before upgrading:
-- [ ] Verify current version: `helm list -n soda-agent`
-- [ ] Check available versions: `helm search repo soda-agent/soda-agent --versions` or visit [ArtifactHub](https://artifacthub.io/packages/helm/soda-agent/soda-agent)
-- [ ] Review release notes for breaking changes (especially when upgrading major/minor versions)
-- [ ] Backup current values: `helm get values -n soda-agent soda-agent > values-backup.yaml`
-- [ ] Verify API keys are set: `echo $SODA_API_KEY_ID`
-- [ ] Verify image credentials (if using separate): `echo $SODA_IMAGE_APIKEY_ID`
-- [ ] Check Kubernetes context: `kubectl config get-contexts`
-- [ ] For production: Consider testing upgrade in dev environment first
-
-After upgrading:
-- [ ] Verify pod status: `kubectl get pods -n soda-agent` (should show Running)
-- [ ] Check logs for errors: `kubectl logs -n soda-agent -l app.kubernetes.io/name=soda-agent --tail=50`
-- [ ] Verify new chart version: `helm list -n soda-agent` (should show updated version)
-- [ ] Verify agent appears in Soda Cloud UI (agent should be online)
-- [ ] Test a scan to ensure functionality
-- [ ] Monitor for any new errors or warnings in logs
-
-### **Rollback Procedure**
-
-If an upgrade causes issues:
-
-**Via Terraform**:
-```bash
-cd env/dev/eu-west-1/addons/soda-agent
-# Revert chart_version in terragrunt.hcl to previous version
+# Individual module deployment (advanced)
+cd env/stack/collibra-dq/network/vpc
 terragrunt apply
 ```
 
-**Via Helm**:
+### Destruction
+
 ```bash
-# List revisions
-helm history soda-agent -n soda-agent
+# Destroy a stack (keeps bootstrap)
+source scripts/set-env.sh
+./destroy-stack.sh collibra-dq
+# (interactive) type: yes
 
-# Rollback to previous revision
-helm rollback soda-agent -n soda-agent
-
-# Or rollback to specific revision
-helm rollback soda-agent <revision-number> -n soda-agent
+# Destroy including bootstrap (DANGEROUS: deletes all Terraform state)
+./destroy-stack.sh collibra-dq --destroy-bootstrap
+# (interactive) type:
+#   - yes
+#   - DESTROY BOOTSTRAP
 ```
 
-### **Fresh Install Process (January 2025)**
+**Important**: Destroy operations happen in reverse order of deployment. The scripts handle dependency ordering automatically. Both deploy and destroy set `TF_INPUT=0` and `TG_INPUT=0` so they run non-interactively (suitable for CI, background runs, or piped input).
 
-If you encounter agent ID issues or need to start completely fresh:
+## Components
 
-1. **Uninstall Helm Release**:
+### Bootstrap (Shared)
+
+**Location**: `env/stack/bootstrap/`
+
+**Purpose**: Creates the Terraform remote state backend that all other modules depend on.
+
+**Resources**:
+- S3 bucket for storing Terraform state files
+- DynamoDB table for state locking (prevents concurrent modifications)
+
+**Design Note**: Shared by both stacks to avoid duplicating state management infrastructure. The bootstrap is import-aware: if S3 bucket and DynamoDB table exist but state is missing, they are automatically imported.
+
+### Soda Agent Stack
+
+**Purpose**: Deploys Soda Agent (data quality monitoring) on Amazon EKS.
+
+**Key Components**:
+- **VPC**: Isolated network with public/private subnets
+- **VPC Endpoints**: Private connectivity to AWS services (ECR, STS, CloudWatch Logs, S3)
+- **EKS Cluster**: Managed Kubernetes cluster with node groups
+- **Ops EC2**: Bastion-like instance for operational access (via SSM Session Manager)
+- **Soda Agent**: Helm chart deployment into EKS
+
+**Access**:
+- EKS cluster: `kubectl` via `aws eks update-kubeconfig`
+- Ops instance: AWS Systems Manager Session Manager (no SSH)
+
+### Collibra DQ Stack
+
+**Purpose**: Deploys Collibra DQ (data quality platform) as a standalone application.
+
+**Key Components**:
+- **VPC**: Isolated network with public/private subnets
+- **VPC Endpoints**: Private connectivity to S3 (for package download) and SSM
+- **RDS PostgreSQL**: Database for Collibra DQ metastore
+- **EC2 Instance**: Application server running Collibra DQ
+- **Application Load Balancer**: Internet-facing ALB for web UI access
+- **Package Upload**: S3 bucket for storing Collibra DQ installation package
+
+**Architecture Flow**:
+1. Package is uploaded to S3 during deployment
+2. EC2 instance downloads package from S3 during boot (user data script)
+3. Collibra DQ installs and connects to RDS database
+4. ALB routes traffic to EC2 instance (port 9000 for web UI; health checks use the same traffic port)
+
+**Access**:
+- Web UI: Via ALB DNS name (HTTP on port 80)
+- EC2 instance: AWS Systems Manager Session Manager
+
+## Environment Variables
+
+### Required for All Deployments
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `TF_VAR_environment` | Environment identifier | `dev` or `prod` |
+| `TF_VAR_region` | AWS region | `eu-west-1`, `us-east-1`, `eu-central-1` |
+| `AWS_PROFILE` OR | AWS profile name | `my-aws-profile` |
+| `AWS_ACCESS_KEY_ID` + | AWS access key ID | `AKIAIOSFODNN7EXAMPLE` |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret access key | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` |
+
+**Note**: If using access keys, ensure `AWS_PROFILE` is unset (or unset it in `scripts/set-env.sh`).
+
+### Collibra DQ Stack Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `COLLIBRA_DQ_ADMIN_PASSWORD` | ✅ Yes | - | Admin user password for Collibra DQ |
+| `COLLIBRA_DQ_LICENSE_KEY` | ✅ Yes | - | Collibra DQ license key |
+| `COLLIBRA_DQ_PACKAGE_FILENAME` | ❌ No | `dq-2025.11-SPARK356-JDK17-package-full.tar` | Package filename in `packages/collibra-dq/` |
+| `COLLIBRA_DQ_PACKAGE_URL` | ❌ No | Auto-generated from S3 | Override S3 URL (usually not needed) |
+| `COLLIBRA_DQ_OWL_BASE` | ❌ No | `/opt/collibra-dq` | Installation directory |
+| `COLLIBRA_DQ_SPARK_PACKAGE` | ❌ No | `spark-3.5.6-bin-hadoop3.tgz` | Spark package name |
+| `COLLIBRA_DQ_LICENSE_NAME` | ❌ No | `collibra-partners` | License name |
+| `COLLIBRA_DQ_RDS_PASSWORD` | ❌ No | Auto-generated | RDS database password |
+| `COLLIBRA_DQ_ENABLE_S3_ACCELERATION` | ❌ No | `false` | Enable S3 Transfer Acceleration |
+| `COLLIBRA_DQ_SKIP_PACKAGE_UPLOAD` | ❌ No | `false` | Skip re-upload if package exists in S3 |
+
+### Soda Agent Stack Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `SODA_API_KEY_ID` | ✅ Yes | - | Soda Cloud API key ID (from **Data Sources → Agents → New Soda Agent** only) |
+| `SODA_API_KEY_SECRET` | ✅ Yes | - | Soda Cloud API key secret |
+| `SODA_CLOUD_REGION` | ❌ No | `eu` | Soda Cloud region (`eu` or `us`) |
+| `SODA_LOG_LEVEL` | ❌ No | `INFO` | Log level |
+| `SODA_LOG_FORMAT` | ❌ No | `raw` | Log format |
+| `SODA_AGENT_ID` | ❌ No | (unset) | Existing agent ID from Soda Cloud (Agents → agent → ID in URL). Set when redeploying and the agent name is already registered to avoid CrashLoopBackOff. |
+| `SODA_IMAGE_APIKEY_ID` | ❌ No | `SODA_API_KEY_ID` | Image registry API key (only if Soda gave separate registry credentials) |
+| `SODA_IMAGE_APIKEY_SECRET` | ❌ No | `SODA_API_KEY_SECRET` | Image registry API key secret |
+
+### Optional Safety Override
+
+| Variable | Description | Use Case |
+|----------|-------------|----------|
+| `TG_EXPECTED_ACCOUNT_ID` | Override expected AWS account ID | CI/CD pipelines (avoids committing account IDs) |
+
+**Template**: Copy `scripts/set-env.example.sh` to `scripts/set-env.sh` and fill in your values.
+
+## Package Deployment
+
+### Collibra DQ Package Management
+
+The Collibra DQ package (~2.5GB) is uploaded to S3 during deployment via the `package-upload` module. The package is then downloaded by the EC2 instance during boot.
+
+**Package Location**: `packages/collibra-dq/dq-2025.11-SPARK356-JDK17-package-full.tar`
+
+**S3 Upload Process**:
+1. Package is uploaded to S3 bucket: `${ACCOUNT_ID}-datashift-${ENV}-packages-${REGION}/collibra-dq/`
+2. Upload happens automatically during `package-upload` module deployment
+3. EC2 instance downloads from S3 using IAM role permissions
+4. Package upload can be skipped if already exists: Set `COLLIBRA_DQ_SKIP_PACKAGE_UPLOAD=true`
+
+**Upload Time**: ~10-15 minutes for 2.5GB package (depends on network speed)
+
+**Optimization Tips**:
+- Use `COLLIBRA_DQ_SKIP_PACKAGE_UPLOAD=true` to skip re-uploads if package hasn't changed
+- Enable S3 Transfer Acceleration: `COLLIBRA_DQ_ENABLE_S3_ACCELERATION=true` (adds cost but faster)
+- Monitor upload progress: Check CloudWatch metrics or S3 console
+
+**Manual Upload** (if Terraform upload fails):
+```bash
+BUCKET_NAME="$(aws sts get-caller-identity --query Account --output text)-datashift-${TF_VAR_environment}-packages-${TF_VAR_region}"
+
+aws s3 cp \
+  "packages/collibra-dq/dq-2025.11-SPARK356-JDK17-package-full.tar" \
+  "s3://${BUCKET_NAME}/collibra-dq/dq-2025.11-SPARK356-JDK17-package-full.tar" \
+  --region $TF_VAR_region
+
+# Then update Terraform state
+cd env/stack/collibra-dq/addons/collibra-dq-standalone/package-upload
+terragrunt apply --auto-approve
+```
+
+## Troubleshooting
+
+### Common Issues
+
+#### AWS Credentials Not Working
+
+**Symptom**: `Error finding AWS credentials` or authentication failures.
+
+**Solution**:
+1. Ensure you've sourced `scripts/set-env.sh` in the **same shell** where you run deploy/destroy
+2. If using access keys, verify `AWS_PROFILE` is unset: `unset AWS_PROFILE`
+3. Test credentials: `aws sts get-caller-identity`
+
+#### EC2 Instance Unhealthy After Deployment
+
+**Symptoms**:
+- Deployment script reports success
+- All infrastructure created (VPC, RDS, EC2, ALB, etc.)
+- ALB target health shows "unhealthy"
+- Collibra DQ web interface not accessible
+
+**Root Cause**: Usually the Collibra DQ package was not uploaded to S3 or EC2 installation failed.
+
+**Diagnosis Steps**:
+
+1. **Check ALB target health:**
    ```bash
-   helm uninstall soda-agent -n soda-agent
+   aws elbv2 describe-target-health \
+     --target-group-arn $(cd env/stack/collibra-dq/addons/collibra-dq-standalone/alb && terragrunt output -raw target_group_arns | jq -r '.["collibra-dq"]') \
+     --region $TF_VAR_region
    ```
 
-2. **Delete Namespace** (removes all secrets and state):
+2. **Check if package is in S3:**
    ```bash
-   kubectl delete namespace soda-agent
+   aws s3 ls s3://$(aws sts get-caller-identity --query Account --output text)-datashift-${TF_VAR_environment}-packages-${TF_VAR_region}/collibra-dq/ --human-readable
+   ```
+   
+   Expected: You should see `dq-2025.11-SPARK356-JDK17-package-full.tar` (~2.5 GB)
+   
+   If missing: Package upload failed or didn't complete.
+
+3. **Check EC2 installation logs:**
+   ```bash
+   # Get instance ID
+   INSTANCE_ID=$(cd env/stack/collibra-dq/addons/collibra-dq-standalone && terragrunt output -raw instance_id)
+   
+   # Connect via SSM
+   aws ssm start-session --target $INSTANCE_ID --region $TF_VAR_region
+   
+   # Inside the instance:
+   tail -100 /var/log/collibra-dq-install.log
+   ```
+   
+   Look for: `fatal error: An error occurred (404) when calling the HeadObject operation: Key "collibra-dq/dq-2025.11-SPARK356-JDK17-package-full.tar" does not exist`
+
+**Resolution**:
+
+1. **Upload the package to S3:**
+   ```bash
+   BUCKET_NAME="$(aws sts get-caller-identity --query Account --output text)-datashift-${TF_VAR_environment}-packages-${TF_VAR_region}"
+   
+   aws s3 cp \
+     "packages/collibra-dq/dq-2025.11-SPARK356-JDK17-package-full.tar" \
+     "s3://${BUCKET_NAME}/collibra-dq/dq-2025.11-SPARK356-JDK17-package-full.tar" \
+     --region $TF_VAR_region
    ```
 
-3. **Verify Cleanup**:
+2. **Update package-upload state:**
    ```bash
-   kubectl get namespace soda-agent  # Should show "NotFound"
+   cd env/stack/collibra-dq/addons/collibra-dq-standalone/package-upload
+   terragrunt apply --auto-approve
    ```
 
-4. **Update Configuration**:
-   - Ensure `create_namespace = true` in Terragrunt config
-   - Verify API keys are set in environment variables
-   - Check chart version is set correctly
-
-5. **Redeploy**:
+3. **Recreate the EC2 instance:**
    ```bash
-   cd env/dev/eu-west-1/addons/soda-agent
-   terragrunt apply
+   cd env/stack/collibra-dq/addons/collibra-dq-standalone
+   terragrunt destroy --auto-approve
+   terragrunt apply --auto-approve
    ```
 
-6. **Verify New Agent**:
-   - Agent will register with a new ID in Soda Cloud
-   - Check logs: `kubectl logs -n soda-agent -l app.kubernetes.io/name=soda-agent`
-   - Verify in Soda Cloud UI: Your Avatar > Agents
+4. **Monitor the installation:**
+   
+   Installation takes 10-15 minutes. Monitor progress:
+   ```bash
+   INSTANCE_ID=$(terragrunt output -raw instance_id)
+   
+   # Connect
+   aws ssm start-session --target $INSTANCE_ID --region $TF_VAR_region
+   
+   # Inside instance
+   tail -f /var/log/collibra-dq-install.log
+   ```
 
-**Note**: Fresh install clears all previous agent state, including stored agent ID. The agent will register as a new agent in Soda Cloud.
+5. **Verify health:**
+   
+   Once installation completes, check target health:
+   ```bash
+   cd env/stack/collibra-dq/addons/collibra-dq-standalone/alb
+   
+   TARGET_GROUP_ARN=$(terragrunt output -json target_group_arns | jq -r '.["collibra-dq"]')
+   
+   aws elbv2 describe-target-health \
+     --target-group-arn "$TARGET_GROUP_ARN" \
+     --region $TF_VAR_region
+   ```
+   
+   Expected: `"State": "healthy"`
 
-## **Notes**
+#### Package Upload Fails (404 Error)
 
-- **Bootstrap**: Set to `skip = true` by default. Run `./deploy-bootstrap.sh <env>` for new environments.
-- **State Management**: Uses S3 backend with DynamoDB locking (created by bootstrap).
-  - S3 versioning and lifecycle policies for cost optimization
-  - DynamoDB point-in-time recovery for disaster recovery
-  - Both resources use consistent tagging from parent configuration
-- **Provider Versions**: Pinned to specific versions for stability.
-- **Tags**: Consistent tagging strategy across all resources.
-- **Security**: VPC endpoints for private communication, minimal public access.
-- **Namespace Management**: Soda Agent namespace is now created explicitly by Terraform for better control.
+**Symptom**: EC2 instance fails to download package from S3 with "404 Not Found".
 
----
+**Solution**:
+1. Verify package file exists: `ls -lh packages/collibra-dq/dq-2025.11-SPARK356-JDK17-package-full.tar`
+2. Check package-upload module completed: `cd env/stack/collibra-dq/addons/collibra-dq-standalone/package-upload && terragrunt output`
+3. Verify S3 bucket and key: `aws s3 ls s3://<bucket-name>/collibra-dq/`
+4. Re-upload package: `cd env/stack/collibra-dq/addons/collibra-dq-standalone/package-upload && terragrunt apply`
 
-### **Recent Updates (January 28, 2025)**
+#### Package Upload Timeout
 
-- **Collibra DQ Standalone**: Added standalone EC2-based deployment option for Collibra DQ
-  - Automated package upload to S3
-  - EC2 instance with automated installation
-  - Application Load Balancer for web access
-  - Support for both dev and prod environments
-  - Production-ready configuration (larger instances, deletion protection, logging)
-- **Soda Agent Upgrade**: Successfully upgraded from `1.2.4` to `1.3.13`
-- **Image Credentials Configuration**: Implemented automatic fallback to main API keys for image registry authentication
-- **Fresh Install Process**: Documented procedure for clean agent reinstallation
-- **Bug Resolution**: Resolved NullPointerException instruction fetching bug via upgrade
-- **Production Configuration**: Updated prod environment to match dev configuration
-- **Documentation**: Enhanced upgrade and troubleshooting sections
-- **Collibra DQ Integration**: Added Collibra DQ Helm module and RDS PostgreSQL database architecture
-- **Dependency Management**: Removed hardcodings and standardized dependency usage across all terragrunt files
+**Symptom**: Terragrunt times out when uploading large package file.
 
-### **Future Enhancements**
+**Resolution**: Upload directly with AWS CLI:
+```bash
+aws s3 cp \
+  "packages/collibra-dq/dq-2025.11-SPARK356-JDK17-package-full.tar" \
+  "s3://$(aws sts get-caller-identity --query Account --output text)-datashift-${TF_VAR_environment}-packages-${TF_VAR_region}/collibra-dq/dq-2025.11-SPARK356-JDK17-package-full.tar" \
+  --region $TF_VAR_region
+```
 
-- **Automated Testing**: Integration tests for infrastructure deployments
-- **Monitoring & Alerting**: Enhanced observability and alerting for deployed components
+Then update the Terraform state:
+```bash
+cd env/stack/collibra-dq/addons/collibra-dq-standalone/package-upload
+terragrunt apply --auto-approve
+```
 
----
+#### Target Group Already Exists (ALB deploy)
 
-**Last Updated**: January 29, 2026  
-**Terraform Version**: >= 1.6  
-**Terragrunt Version**: >= 0.54  
-**AWS Provider**: >= 5.0, < 6.0  
-**Soda Agent Chart Version**: 1.3.13 (pinned)
+**Symptom**: `Error: ELBv2 Target Group (ds-dev-dq-c16cb6-tg) already exists` when deploying the Application Load Balancer.
+
+**Cause**: The target group was left in AWS from a previous destroy (or partial deploy). Terraform tries to create it and AWS reports it already exists.
+
+**Fix**: Import the existing target group into Terraform state, then re-run deploy (or apply the ALB module):
+
+```bash
+# 1. Get target group ARN (replace region if needed)
+TG_ARN=$(aws elbv2 describe-target-groups --names ds-dev-dq-c16cb6-tg --region "${TF_VAR_region:-eu-west-1}" --query 'TargetGroups[0].TargetGroupArn' --output text)
+
+# 2. Import into ALB module state (from project root, with env vars set)
+cd env/stack/collibra-dq/addons/collibra-dq-standalone/alb
+terragrunt import 'module.alb.aws_lb_target_group.this["collibra-dq"]' "$TG_ARN"
+
+# 3. Re-run deploy or apply
+cd -  # back to project root
+./deploy-stack.sh collibra-dq
+# or: cd env/stack/collibra-dq/addons/collibra-dq-standalone/alb && terragrunt apply --auto-approve
+```
+
+Then continue with the rest of the stack (e.g. target group attachment) or re-run `./deploy-stack.sh collibra-dq` so it proceeds from the ALB step.
+
+#### 502 Bad Gateway from ALB
+
+**Symptom**: ALB returns 502 Bad Gateway when accessing Collibra DQ web UI.
+
+**Diagnosis Steps**:
+1. Check target group health: AWS Console → EC2 → Target Groups → Check health status
+2. Check EC2 instance logs: `aws ssm start-session --target <instance-id>` then `sudo tail -f /var/log/collibra-dq-install.log`
+3. Verify security groups: EC2 SG must allow ingress on port 9000 from ALB SG
+4. Check application is running: `sudo systemctl status collibra-dq`
+5. Verify port binding: `ss -tlnp | grep 9000` (should show `0.0.0.0:9000`)
+
+**Common Causes**:
+- Package not uploaded to S3 (EC2 installation failed)
+- Security group misconfiguration (ALB can't reach EC2)
+- Application not started (check systemd service)
+- Application bound to localhost instead of 0.0.0.0
+
+#### EC2 Installation Fails
+
+**Symptom**: Installation log shows errors downloading from S3.
+
+**Check**:
+1. Verify IAM role has S3 read permissions
+2. Verify package exists in S3
+3. Verify VPC endpoints for S3 are configured
+4. Check instance internet connectivity (NAT gateway)
+
+**Resolution**:
+```bash
+# Re-run installation manually
+INSTANCE_ID=<instance-id>
+aws ssm start-session --target $INSTANCE_ID --region $TF_VAR_region
+
+# Inside instance
+sudo -i
+cd /opt/collibra-dq
+aws s3 cp s3://<bucket>/collibra-dq/<package> .
+bash /tmp/install_collibra_dq.sh
+```
+
+#### State Lock Error
+
+**Symptom**:
+```
+Error: Error acquiring the state lock
+ConditionalCheckFailedException: The conditional request failed
+```
+
+**Resolution**: Only unlock if you are sure no other Terraform/Terragrunt process is using the state (e.g. a previous run crashed). Extract the lock ID from the error message, then run:
+
+```bash
+./scripts/unlock-terraform-lock.sh <module-path> <lock-id>
+```
+
+**Example**:
+```bash
+./scripts/unlock-terraform-lock.sh collibra-dq/network/vpc 58b32bea-b71b-6385-e816-f98ecba14b71
+```
+
+`module-path` is relative to `env/stack` (e.g. `collibra-dq/network/vpc`). See [scripts/README.md](scripts/README.md#state-lock-unlock).
+
+#### RDS Security Group Deletion Fails
+
+**Symptom**: `destroy-stack.sh` fails when destroying RDS security group with "ENI attached" error.
+
+**Solution**: The destroy script checks for this automatically. If RDS instance still exists in AWS:
+1. Delete RDS instance manually: `aws rds delete-db-instance --db-instance-identifier <id> --skip-final-snapshot`
+2. Wait for deletion to complete
+3. Re-run destroy script
+
+#### Bootstrap Resources Exist But State Missing
+
+**Symptom**: Bootstrap deployment fails with "bucket already exists" or similar.
+
+**Solution**: The deploy script automatically imports existing resources. If it doesn't:
+```bash
+cd env/stack/bootstrap
+terragrunt import aws_s3_bucket.tfstate <bucket-name>
+terragrunt import aws_dynamodb_table.locks <table-name>
+terragrunt apply
+```
+
+### Prevention Tips
+
+To prevent common issues:
+
+1. **Always use absolute paths** in Terragrunt when referencing local files (use `get_repo_root()`)
+2. **Verify S3 uploads** before proceeding with dependent resources
+3. **Monitor installation logs** during first deployment
+4. **Test fileexists()** in Terraform console before deploying:
+   ```bash
+   cd <module>
+   terragrunt console <<< 'fileexists(var.local_file_path)'
+   ```
+
+### Getting Help
+
+1. **Check logs**: All deployment scripts output detailed logs
+2. **Validate configuration**: `scripts/test-terragrunt.sh` validates Terragrunt configs
+3. **Check AWS Console**: Verify resources were created as expected
+4. **Review Terragrunt output**: Each module outputs resource IDs and endpoints
+5. **Check installation logs**: Connect via SSM and review `/var/log/collibra-dq-install.log`
+
+## Security Notes
+
+⚠️ **Important Security Considerations**:
+
+1. **Terraform State Contains Secrets**: Even with `sensitive = true`, state files contain sensitive values. Treat state files as secrets.
+2. **Never Commit Secrets**: `scripts/set-env.sh` is git-ignored. Never commit it.
+3. **Rotate Secrets Immediately**: If secrets are accidentally logged or exposed, rotate them immediately.
+4. **State Backend Security**: S3 bucket for state should have encryption enabled and restricted access.
+5. **CI/CD Secrets**: Store secrets in CI/CD secret management (GitHub Secrets, AWS Secrets Manager, etc.).
+
+## Contributing
+
+- **Branching**: Work on short-lived feature branches; do not commit directly to `main`. Merge via Pull Requests. Release branches (`release/x.y.z`) are for stabilization only. See [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Commits**: Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): `feat(scope): description`, `fix(scope): description`, `docs: ...`, etc.
+- **PRs**: Keep PRs small and focused; describe why the change exists, not only what changed.
+- **Pre-commit**: Run `pre-commit install` and `pre-commit run --all-files` before pushing.
+
+## Additional Documentation
+
+| Document | Description |
+|----------|-------------|
+| [env/stack/README.md](env/stack/README.md) | Live stack layout and module map |
+| [env/README.md](env/README.md) | Terragrunt config hierarchy (`root.hcl`, `env.hcl`, etc.) |
+| [scripts/README.md](scripts/README.md) | Utility scripts (validate-env, test-terragrunt, verify-soda-keys) |
+| [packages/README.md](packages/README.md) | Package storage (Collibra DQ) |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Branching, commits, PRs, and release checklist |
+| Module READMEs | `module/**/README.md` — inputs, outputs, and usage per module |
+
+Architecture and design decisions are in the [Architecture & Design Decisions](#architecture--design-decisions) section above.
+
+## License
+
+Proprietary. See repository or maintainers for license terms.

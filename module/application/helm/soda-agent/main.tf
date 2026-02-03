@@ -59,9 +59,9 @@ locals {
   secret_checksum = sha256(local.dockerconfigjson)
 }
 
-# Create the imagePullSecret only when NOT reusing an existing one
+# Create the imagePullSecret only when NOT reusing an existing one AND credentials are provided
 resource "kubernetes_secret" "image_pull" {
-  count = local.using_existing_pullsec ? 0 : 1
+  count = local.using_existing_pullsec ? 0 : (trimspace(var.image_credentials_id) != "" && trimspace(var.image_credentials_secret) != "" ? 1 : 0)
 
   metadata {
     name      = "${var.agent_name}-pullsecret" # keep stable (no timestamps)
@@ -93,10 +93,17 @@ resource "terraform_data" "rotate_secret" {
 
 # Resolve the secret name regardless of creation path
 locals {
-  image_pull_secret_name = local.using_existing_pullsec ? var.existing_image_pull_secret : try(kubernetes_secret.image_pull[0].metadata[0].name, null)
+  image_pull_secret_name = local.using_existing_pullsec ? var.existing_image_pull_secret : (length(kubernetes_secret.image_pull) > 0 ? kubernetes_secret.image_pull[0].metadata[0].name : null)
 }
 
 # ---------- Helm release ----------
+# Determine if repository requires authentication (public Soda repo doesn't need it)
+locals {
+  # Official public Soda Helm repo doesn't require authentication
+  # Only use auth for private/custom repositories
+  use_repo_auth = !startswith(var.chart_repo, "https://helm.soda.io")
+}
+
 resource "helm_release" "soda_agent" {
   name             = "soda-agent"
   namespace        = var.namespace
@@ -104,10 +111,17 @@ resource "helm_release" "soda_agent" {
   repository       = var.chart_repo
   chart            = var.chart_name
   version          = var.chart_version
+  # Only set repository auth for private repositories (not the public Soda repo)
+  repository_username = local.use_repo_auth ? var.api_key_id : null
+  repository_password = local.use_repo_auth ? var.api_key_secret : null
   atomic           = true
   wait_for_jobs    = true
   timeout          = 900
   lint             = false
+  # Use upgrade-install mode for idempotent installs (handles orphaned releases gracefully)
+  # This is equivalent to: helm upgrade --install
+  # If release doesn't exist, installs it; if it exists, upgrades it
+  upgrade_install  = true
 
   # App settings
   set {
@@ -115,17 +129,26 @@ resource "helm_release" "soda_agent" {
     value = var.agent_name
   }
 
+  # When set, use existing agent (avoids "agent with name X already registered" on redeploy)
+  dynamic "set" {
+    for_each = trimspace(var.agent_id) != "" ? [1] : []
+    content {
+      name  = "soda.agent.id"
+      value = var.agent_id
+    }
+  }
+
   set {
     name  = "soda.cloud.endpoint"
     value = var.cloud_endpoint
   }
 
-  set {
+  set_sensitive {
     name  = "soda.apikey.id"
     value = var.api_key_id
   }
 
-  set {
+  set_sensitive {
     name  = "soda.apikey.secret"
     value = var.api_key_secret
   }

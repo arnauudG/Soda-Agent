@@ -20,17 +20,34 @@ resource "random_password" "master_password" {
   override_special = "!#$%&*()-_=+[]{}<>:?"
 }
 
+# Generate random ID for snapshot name uniqueness (prevents collisions on repeated destroys)
+resource "random_id" "snapshot_suffix" {
+  count       = var.final_snapshot_identifier == "" && !var.skip_final_snapshot ? 1 : 0
+  byte_length = 4
+  keepers = {
+    # Change when timestamp changes (ensures new ID on each Terraform run)
+    timestamp = formatdate("YYYY-MM-DD-hhmmss", timestamp())
+  }
+}
+
 locals {
   master_password = var.master_password != "" ? var.master_password : random_password.master_password[0].result
-  final_snapshot_name = var.final_snapshot_identifier != "" ? var.final_snapshot_identifier : "${var.name}-final-snapshot-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
+  final_snapshot_name = var.final_snapshot_identifier != "" ? var.final_snapshot_identifier : (
+    var.skip_final_snapshot ? null : "${var.name}-final-snapshot-${formatdate("YYYY-MM-DD-hhmm", timestamp())}-${try(random_id.snapshot_suffix[0].hex, substr(md5(timestamp()), 0, 8))}"
+  )
   # Convert name to lowercase for AWS resources that require it (subnet groups, parameter groups)
   # DB instance identifier can have uppercase, but subnet/parameter groups cannot
   name_lower = lower(var.name)
+
+  # Some RDS resources (subnet/parameter groups) have globally-unique names per region.
+  # Include a short VPC suffix so pre-existing resources from another VPC don't collide.
+  vpc_id_compact = replace(var.vpc_id, "vpc-", "")
+  vpc_suffix     = substr(local.vpc_id_compact, max(0, length(local.vpc_id_compact) - 6), 6)
 }
 
 # DB Subnet Group
 resource "aws_db_subnet_group" "this" {
-  name       = "${local.name_lower}-subnet-group"
+  name       = "${local.name_lower}-${local.vpc_suffix}-subnet-group"
   subnet_ids = var.subnet_ids
 
   tags = merge(
@@ -43,7 +60,7 @@ resource "aws_db_subnet_group" "this" {
 
 # DB Parameter Group (optional - uses defaults if not specified)
 resource "aws_db_parameter_group" "this" {
-  name   = "${local.name_lower}-parameter-group"
+  name   = "${local.name_lower}-${local.vpc_suffix}-parameter-group"
   family = "postgres15"
 
   tags = merge(
@@ -56,7 +73,9 @@ resource "aws_db_parameter_group" "this" {
 
 # DB Instance
 resource "aws_db_instance" "this" {
-  identifier = local.name_lower
+  # Suffix the identifier to avoid colliding with legacy instances created in another VPC.
+  # This keeps the module "incremental" without requiring environment-variable overrides.
+  identifier = "${local.name_lower}-${local.vpc_suffix}"
 
   engine         = "postgres"
   engine_version = var.engine_version

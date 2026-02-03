@@ -16,6 +16,10 @@ module "security_group" {
   description = var.description
   vpc_id      = var.vpc_id
 
+  # Don't revoke rules on delete - RDS manages its own ENIs and we can't detach them manually
+  # The RDS instance must be destroyed first before the security group can be deleted
+  revoke_rules_on_delete = false
+
   # Ingress rules from security groups (e.g., EKS nodes)
   ingress_with_source_security_group_id = [
     for sg_id in var.allowed_security_group_ids : {

@@ -68,18 +68,11 @@ resource "aws_s3_bucket_accelerate_configuration" "package_storage" {
   status = "Enabled"
 }
 
-# Upload the package file if local file exists
-# Note: When skip_upload_if_exists is true, the resource is still created but source/etag changes are ignored
-# This prevents Terraform from destroying the resource when skip_upload_if_exists is enabled
-resource "aws_s3_object" "package" {
-  count = var.local_file_path != "" && fileexists(var.local_file_path) ? 1 : 0
-
-  bucket = local.bucket_id
-  key    = var.s3_key
-  source = var.local_file_path
-  etag   = fileexists(var.local_file_path) ? filemd5(var.local_file_path) : null
-  # Auto-detect content type based on file extension
-  content_type = try(
+# Local values for package upload
+locals {
+  should_upload_package = var.local_file_path != "" && fileexists(var.local_file_path)
+  file_etag             = local.should_upload_package ? filemd5(var.local_file_path) : null
+  content_type_value = try(
     endswith(var.local_file_path, ".tar.gz") || endswith(var.local_file_path, ".tgz") ? "application/gzip" : (
       endswith(var.local_file_path, ".tar") ? "application/x-tar" : (
         endswith(var.local_file_path, ".zip") ? "application/zip" : "application/octet-stream"
@@ -87,22 +80,42 @@ resource "aws_s3_object" "package" {
     ),
     "application/octet-stream"
   )
+}
+
+# Upload the package file to S3
+# Best practice: Single resource with conditional lifecycle rules
+# 
+# When skip_upload_if_exists = false (default):
+#   - File is uploaded/updated whenever local file changes (etag changes)
+#   - Terraform automatically detects changes via etag comparison
+#
+# When skip_upload_if_exists = true:
+#   - File is uploaded on first apply
+#   - Subsequent changes to local file are ignored (lifecycle.ignore_changes)
+#   - To force re-upload: set skip_upload_if_exists=false or use terraform taint
+resource "aws_s3_object" "package" {
+  count = local.should_upload_package ? 1 : 0
+
+  bucket       = local.bucket_id
+  key          = var.s3_key
+  source       = var.local_file_path
+  etag         = local.file_etag
+  content_type = local.content_type_value
 
   tags = merge(var.tags, {
     Name      = var.package_name
     Component = "package-storage"
   })
 
-  # Lifecycle: Ignore changes to prevent unnecessary re-uploads
-  # Note: Terraform requires lifecycle.ignore_changes to be a static list (no conditionals allowed)
-  # When skip_upload_if_exists is true, we always ignore source/etag to prevent re-uploads
-  # To force a re-upload: temporarily set skip_upload_if_exists=false or use terraform taint
+  # Lifecycle rules:
+  # - Always ignore tags and content_type to prevent unnecessary updates
+  # - Note: If you need to re-upload, either:
+  #   1. Change the file locally (etag will change)
+  #   2. Manually delete the S3 object and re-run terraform apply
   lifecycle {
     ignore_changes = [
       tags,
-      content_type,
-      source,
-      etag
+      content_type
     ]
   }
 

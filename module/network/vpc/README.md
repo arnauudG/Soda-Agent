@@ -4,7 +4,7 @@ Creates an AWS VPC with public and private subnets across multiple availability 
 
 ## Description
 
-This module wraps [terraform-aws-modules/vpc/aws](https://registry.terraform.io/modules/terraform-aws-modules/vpc/aws/latest) to provide a standardized VPC configuration for the Soda-Agent infrastructure. It creates:
+This module wraps [terraform-aws-modules/vpc/aws](https://registry.terraform.io/modules/terraform-aws-modules/vpc/aws/latest) to provide a standardized VPC configuration. It creates:
 
 - VPC with configurable CIDR block
 - Public subnets (for ALB, NAT Gateway)
@@ -33,7 +33,7 @@ module "vpc" {
 
   tags = {
     Environment = "dev"
-    Project     = "Soda-Agent"
+    Project     = "DQ-Infrastructures"
   }
 }
 ```

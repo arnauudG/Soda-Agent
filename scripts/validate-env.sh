@@ -92,8 +92,48 @@ validate_aws() {
         return 1
     fi
 
-    if ! aws sts get-caller-identity &> /dev/null; then
-        print_error "AWS credentials are not configured or invalid"
+    # Show what we have (so user sees what's missing)
+    if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+        print_status "AWS_ACCESS_KEY_ID: not set"
+    else
+        print_status "AWS_ACCESS_KEY_ID: set (length ${#AWS_ACCESS_KEY_ID})"
+    fi
+    if [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+        print_status "AWS_SECRET_ACCESS_KEY: not set"
+    else
+        print_status "AWS_SECRET_ACCESS_KEY: set (length ${#AWS_SECRET_ACCESS_KEY})"
+    fi
+    if [ -z "$AWS_PROFILE" ]; then
+        print_status "AWS_PROFILE: not set"
+    else
+        print_status "AWS_PROFILE: $AWS_PROFILE"
+    fi
+
+    # Validate AWS auth using whatever is configured in the shell.
+    # - If AWS_PROFILE is set, AWS CLI will use that profile (recommended).
+    # - Otherwise, AWS CLI will use env keys / other credential sources.
+    local aws_err aws_rc auth_mode
+    auth_mode="default"
+    if [ -n "${AWS_PROFILE:-}" ]; then
+        auth_mode="AWS_PROFILE=$AWS_PROFILE"
+    else
+        auth_mode="env keys / default provider chain"
+    fi
+
+    aws_err=$(aws sts get-caller-identity 2>&1)
+    aws_rc=$?
+    if [ $aws_rc -ne 0 ]; then
+        print_error "AWS credentials rejected ($auth_mode)"
+        if [ -n "$aws_err" ]; then
+            print_error "AWS CLI: $aws_err"
+        else
+            print_status "Run in your shell: aws sts get-caller-identity"
+        fi
+        if [ -z "$AWS_PROFILE" ] && ([ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]); then
+            print_error "Provide either:"
+            print_error "  - AWS_PROFILE (recommended), or"
+            print_error "  - AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY"
+        fi
         ((ERRORS++))
         return 1
     fi
@@ -107,6 +147,7 @@ validate_aws() {
 main() {
     local stack=${1:-""}
     local environment=${2:-""}
+    local skip_addons=${3:-"no"}
 
     echo ""
     echo "============================================"
@@ -121,7 +162,7 @@ main() {
 
     # Common validations
     print_status "Checking common environment variables..."
-    validate_optional "TF_VAR_aws_region" "AWS region for deployment" "eu-west-1"
+    validate_optional "TF_VAR_region" "AWS region for deployment" "eu-west-1"
     echo ""
 
     # Stack-specific validations
@@ -130,50 +171,60 @@ main() {
             print_status "Validating Soda Agent stack requirements..."
             echo ""
 
-            # Required for Soda Agent
-            validate_required "SODA_API_KEY_ID" "Soda Cloud API Key ID for agent authentication"
-            validate_required "SODA_API_KEY_SECRET" "Soda Cloud API Key Secret for agent authentication"
+            if [ "$skip_addons" = "yes" ]; then
+                print_warning "skip_addons=yes: Skipping Soda Agent add-on secret validation"
+            else
+                # Required for Soda Agent
+                validate_required "SODA_API_KEY_ID" "Soda Cloud API Key ID for agent authentication"
+                validate_required "SODA_API_KEY_SECRET" "Soda Cloud API Key Secret for agent authentication"
 
-            # Optional Soda settings
-            validate_optional "SODA_CLOUD_REGION" "Soda Cloud region (eu or us)" "eu"
-            validate_optional "SODA_LOG_LEVEL" "Log level for Soda Agent" "INFO"
-            validate_optional "SODA_LOG_FORMAT" "Log format (raw or json)" "raw"
+                # Optional Soda settings
+                validate_optional "SODA_CLOUD_REGION" "Soda Cloud region (eu or us)" "eu"
+                validate_optional "SODA_LOG_LEVEL" "Log level for Soda Agent" "INFO"
+                validate_optional "SODA_LOG_FORMAT" "Log format (raw or json)" "raw"
 
-            # Optional: Separate image registry credentials (defaults to API keys)
-            validate_optional "SODA_IMAGE_APIKEY_ID" "Image registry API key ID (defaults to SODA_API_KEY_ID)"
-            validate_optional "SODA_IMAGE_APIKEY_SECRET" "Image registry API key secret (defaults to SODA_API_KEY_SECRET)"
+                # Optional: Existing agent ID when redeploying (avoids "agent name already registered")
+                validate_optional "SODA_AGENT_ID" "Existing Soda Agent ID from Soda Cloud (Agents → agent → ID in URL)"
+                # Optional: Separate image registry credentials (defaults to API keys)
+                validate_optional "SODA_IMAGE_APIKEY_ID" "Image registry API key ID (defaults to SODA_API_KEY_ID)"
+                validate_optional "SODA_IMAGE_APIKEY_SECRET" "Image registry API key secret (defaults to SODA_API_KEY_SECRET)"
+            fi
             ;;
 
         collibra-dq)
             print_status "Validating Collibra DQ stack requirements..."
             echo ""
 
-            # Required for Collibra DQ
-            validate_required "COLLIBRA_DQ_ADMIN_PASSWORD" "Admin password for Collibra DQ web interface"
-            validate_required "COLLIBRA_DQ_LICENSE_KEY" "Collibra DQ license key"
+            if [ "$skip_addons" = "yes" ]; then
+                print_warning "skip_addons=yes: Skipping Collibra DQ add-on secret validation"
+            else
+                # Required for Collibra DQ
+                validate_required "COLLIBRA_DQ_ADMIN_PASSWORD" "Admin password for Collibra DQ web interface"
+                validate_required "COLLIBRA_DQ_LICENSE_KEY" "Collibra DQ license key"
 
-            # Optional Collibra DQ settings
-            validate_optional "COLLIBRA_DQ_VERSION" "Collibra DQ version to install" "2024.11.0"
-            validate_optional "COLLIBRA_DQ_ALLOWED_CIDR" "CIDR block for security group access" "VPC CIDR"
+                # Optional Collibra DQ settings
+                validate_optional "COLLIBRA_DQ_VERSION" "Collibra DQ version to install" "2024.11.0"
+                validate_optional "COLLIBRA_DQ_ALLOWED_CIDR" "CIDR block for security group access" "VPC CIDR"
 
-            # Validate CIDR if set
-            validate_cidr "COLLIBRA_DQ_ALLOWED_CIDR"
+                # Validate CIDR if set
+                validate_cidr "COLLIBRA_DQ_ALLOWED_CIDR"
 
-            # RDS settings
-            validate_optional "COLLIBRA_DQ_RDS_USERNAME" "RDS database username" "collibradq"
-            validate_optional "COLLIBRA_DQ_RDS_PASSWORD" "RDS database password" "(auto-generated)"
+                # RDS settings
+                validate_optional "COLLIBRA_DQ_RDS_USERNAME" "RDS database username" "collibradq"
+                validate_optional "COLLIBRA_DQ_RDS_PASSWORD" "RDS database password" "(auto-generated)"
 
-            # Security warning for production
-            if [ "$environment" = "prod" ]; then
-                echo ""
-                print_status "Production environment checks..."
+                # Security warning for production
+                if [ "$environment" = "prod" ]; then
+                    echo ""
+                    print_status "Production environment checks..."
 
-                # Check for HTTPS certificate
-                if [ -z "$COLLIBRA_DQ_CERTIFICATE_ARN" ]; then
-                    print_warning "COLLIBRA_DQ_CERTIFICATE_ARN not set - ALB will use HTTP only (not recommended for production)"
-                    ((WARNINGS++))
-                else
-                    print_success "HTTPS certificate configured"
+                    # Check for HTTPS certificate
+                    if [ -z "$COLLIBRA_DQ_CERTIFICATE_ARN" ]; then
+                        print_warning "COLLIBRA_DQ_CERTIFICATE_ARN not set - ALB will use HTTP only (not recommended for production)"
+                        ((WARNINGS++))
+                    else
+                        print_success "HTTPS certificate configured"
+                    fi
                 fi
             fi
             ;;
@@ -207,7 +258,7 @@ main() {
         print_error "Validation failed with $ERRORS error(s) and $WARNINGS warning(s)"
         echo ""
         echo "Please set the required environment variables and try again."
-        echo "See .env.example for a complete list of environment variables."
+        echo "See scripts/set-env.example.sh for a complete list of environment variables."
         exit 1
     fi
 
