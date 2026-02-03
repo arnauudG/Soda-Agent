@@ -61,6 +61,7 @@ locals {
   tg_download_dir = pathexpand("~/.terragrunt-cache")
 
   # ==========================================================================
+<<<<<<< HEAD
   # SHARED NAMING CONVENTIONS
   # ==========================================================================
   # Consistent resource naming patterns across all stacks
@@ -76,6 +77,8 @@ locals {
   #   - Derive agent from cluster: replace cluster name pattern to extract org-env-agent
 
   # ==========================================================================
+=======
+>>>>>>> origin/main
   # STATE BACKEND NAMING
   # ==========================================================================
   state_bucket = "${local.actual_account_id}-${local.org}-${local.env}-tfstate-${local.aws_region}"
@@ -104,7 +107,10 @@ locals {
   rds_config         = local.env_settings.rds
   collibra_dq_config = local.env_settings.collibra_dq
   alb_config         = local.env_settings.alb
+<<<<<<< HEAD
   soda_agent_config  = local.env_settings.soda_agent
+=======
+>>>>>>> origin/main
 }
 
 # ==========================================================================
@@ -144,5 +150,8 @@ inputs = {
   rds_config         = local.rds_config
   collibra_dq_config = local.collibra_dq_config
   alb_config         = local.alb_config
+<<<<<<< HEAD
   soda_agent_config  = local.soda_agent_config
+=======
+>>>>>>> origin/main
 }

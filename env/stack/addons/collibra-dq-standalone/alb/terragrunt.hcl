@@ -1,0 +1,106 @@
+# env/stack/addons/collibra-dq-standalone/alb/terragrunt.hcl
+# Application Load Balancer for Collibra DQ Web Interface
+
+include "root" {
+  path   = find_in_parent_folders("root.hcl")
+  expose = true
+}
+
+include "common" {
+  path = find_in_parent_folders("common.hcl")
+}
+
+locals {
+  org         = include.root.locals.org
+  env         = include.root.locals.env
+  aws_region  = include.root.locals.aws_region
+  common_tags = include.root.locals.common_tags
+  alb_config  = include.root.locals.alb_config
+
+  # HTTP-only listener (dev) - HTTPS/ACM can be added later with domain & certificate
+  listeners_map = {
+    http = {
+      port     = 80
+      protocol = "HTTP"
+      forward = {
+        target_group_key = "collibra-dq"
+      }
+    }
+  }
+}
+
+dependency "vpc" {
+  config_path = "../../../network/vpc"
+  mock_outputs = {
+    vpc_id         = "vpc-123456"
+    public_subnets = ["subnet-123456", "subnet-789012", "subnet-345678"]
+  }
+  mock_outputs_allowed_terraform_commands = ["init", "plan", "apply"]
+}
+
+dependency "sg_alb" {
+  config_path = "./sg-alb"
+  mock_outputs = {
+    security_group_id = "sg-mock-alb"
+  }
+  mock_outputs_allowed_terraform_commands = ["init", "plan", "apply"]
+}
+
+dependencies {
+  paths = [
+    "../../../network/vpc",
+    "./sg-alb"
+  ]
+}
+
+terraform {
+  source = "${include.root.locals.modules_root}/network/alb/application"
+}
+
+inputs = {
+  # Keep ALB/TG names short and VPC-suffixed to avoid collisions with legacy resources.
+  name    = "${local.org}-${local.env}-dq-${substr(replace(dependency.vpc.outputs.vpc_id, "vpc-", ""), length(replace(dependency.vpc.outputs.vpc_id, "vpc-", "")) - 6, 6)}-alb"
+  vpc_id  = dependency.vpc.outputs.vpc_id
+  subnets = dependency.vpc.outputs.public_subnets
+
+  internal = false  # Internet-facing ALB
+
+  enable_deletion_protection       = local.alb_config.deletion_protection
+  enable_http2                     = true
+  enable_cross_zone_load_balancing = true
+
+  security_groups = [dependency.sg_alb.outputs.security_group_id]
+
+  enable_logging = local.env == "prod"
+
+  listeners = local.listeners_map
+
+  target_groups = {
+    collibra-dq = {
+      name                 = "${local.org}-${local.env}-dq-${substr(replace(dependency.vpc.outputs.vpc_id, "vpc-", ""), length(replace(dependency.vpc.outputs.vpc_id, "vpc-", "")) - 6, 6)}-tg"
+      backend_protocol     = "HTTP"
+      backend_port         = 9000
+      target_type          = "instance"
+      deregistration_delay = 30
+      create_attachment    = false
+
+      # Use Collibra DQ Agent health API (port 9101) for health checks; web UI on 9000 may return 401/redirects
+      health_check = {
+        enabled             = true
+        healthy_threshold   = 2
+        interval            = 30
+        matcher             = "200"
+        path                = "/"
+        port                = "9101"
+        protocol            = "HTTP"
+        timeout             = 5
+        unhealthy_threshold = 3
+      }
+    }
+  }
+
+  tags = merge(local.common_tags, {
+    Component = "alb"
+    Name      = "${local.org}-${local.env}-collibra-dq-alb"
+  })
+}

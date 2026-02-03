@@ -28,6 +28,7 @@ echo ""
 phases=(
     "bootstrap"
 
+<<<<<<< HEAD
     # Soda Agent stack
     "soda-agent/network/vpc"
     "soda-agent/network/vpc-endpoints"
@@ -51,6 +52,26 @@ phases=(
     "collibra-dq/addons/collibra-dq-standalone"
     "collibra-dq/addons/collibra-dq-standalone/alb"
     "collibra-dq/addons/collibra-dq-standalone/alb/target-group-attachment"
+=======
+    "network/vpc"
+    "network/vpc-endpoints"
+
+    "ops/sg-ops"
+    "eks"
+    "ops/ec2-ops"
+    "eks/ops-ec2-eks-access"
+
+    "addons/soda-agent"
+
+    "addons/collibra-dq-standalone/alb/sg-alb"
+    "addons/collibra-dq-standalone/sg-collibra-dq"
+    "database/rds-collibra-dq/sg-rds"
+    "database/rds-collibra-dq/rds"
+    "addons/collibra-dq-standalone/package-upload"
+    "addons/collibra-dq-standalone"
+    "addons/collibra-dq-standalone/alb"
+    "addons/collibra-dq-standalone/alb/target-group-attachment"
+>>>>>>> origin/main
 )
 
 VALIDATION_FAILED=0
@@ -87,8 +108,12 @@ for phase in "${phases[@]}"; do
     fi
 
     # Plan with mock outputs (may still fail if a module requires real provider/AWS access).
+<<<<<<< HEAD
     # We don't persist plan files; this is only a quick sanity check.
     if ! terragrunt plan -input=false -lock=false > /dev/null 2>&1; then
+=======
+    if ! terragrunt plan -input=false -out=/dev/null > /dev/null 2>&1; then
+>>>>>>> origin/main
         echo "⚠️  Plan failed (may be due to missing dependencies or missing provider credentials)"
     else
         echo "✅ Plan successful"

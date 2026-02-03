@@ -28,7 +28,11 @@ print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 # Usage
 usage() {
     cat << EOF
+<<<<<<< HEAD
 Usage: $0 <stack> [--destroy-bootstrap] [--skip-addons]
+=======
+Usage: $0 <stack> [--destroy-bootstrap]
+>>>>>>> origin/main
 
 Stack Options:
   soda-agent    Destroy soda-agent stack (EKS)
@@ -37,8 +41,11 @@ Stack Options:
 Options:
   --destroy-bootstrap   Also destroy the bootstrap (S3 bucket and DynamoDB table)
                         WARNING: This will delete all Terraform state!
+<<<<<<< HEAD
   --skip-addons         Destroy core infrastructure only (no Soda Agent Helm / no Collibra DQ app).
                         Safety: this will refuse to run if add-on modules still exist.
+=======
+>>>>>>> origin/main
 
 Environment Variables (Required):
   TF_VAR_environment  - Environment (dev, prod)
@@ -50,6 +57,7 @@ AWS Credentials (one of):
   AWS_SECRET_ACCESS_KEY - AWS secret access key
 
 Examples:
+<<<<<<< HEAD
   # Destroy soda-agent (keeps bootstrap)
   source scripts/set-env.sh
   echo "yes" | $0 soda-agent
@@ -59,6 +67,13 @@ Examples:
   # (interactive) then type:
   #   - "yes" to confirm stack destruction
   #   - "DESTROY BOOTSTRAP" to confirm state backend deletion
+=======
+  # Destroy soda-agent (set env vars first)
+  echo "yes" | $0 soda-agent
+
+  # Destroy collibra-dq and bootstrap
+  echo "yes" | $0 collibra-dq --destroy-bootstrap
+>>>>>>> origin/main
 EOF
     exit 1
 }
@@ -75,6 +90,13 @@ validate_env() {
         missing+=("TF_VAR_region")
     fi
 
+<<<<<<< HEAD
+=======
+    if [ -z "$AWS_PROFILE" ] && [ -z "$AWS_ACCESS_KEY_ID" ]; then
+        missing+=("AWS_PROFILE or AWS_ACCESS_KEY_ID")
+    fi
+
+>>>>>>> origin/main
     if [ ${#missing[@]} -gt 0 ]; then
         print_error "Missing required environment variables:"
         for var in "${missing[@]}"; do
@@ -104,7 +126,10 @@ fi
 
 STACK=$1
 DESTROY_BOOTSTRAP=""
+<<<<<<< HEAD
 SKIP_ADDONS="no"
+=======
+>>>>>>> origin/main
 
 # Parse optional flags
 shift
@@ -113,9 +138,12 @@ while [ $# -gt 0 ]; do
         --destroy-bootstrap)
             DESTROY_BOOTSTRAP="yes"
             ;;
+<<<<<<< HEAD
         --skip-addons)
             SKIP_ADDONS="yes"
             ;;
+=======
+>>>>>>> origin/main
         *)
             print_error "Unknown option: $1"
             usage
@@ -123,8 +151,11 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+<<<<<<< HEAD
 
 export SKIP_ADDONS
+=======
+>>>>>>> origin/main
 
 if [[ ! "$STACK" =~ ^(soda-agent|collibra-dq)$ ]]; then
     print_error "Invalid stack: $STACK"
@@ -134,6 +165,7 @@ fi
 
 # Validate environment
 validate_env
+<<<<<<< HEAD
 
 ENVIRONMENT="$TF_VAR_environment"
 REGION="$TF_VAR_region"
@@ -156,6 +188,23 @@ if [ -z "$AWS_ACCOUNT_ID" ] || [ "$AWS_ACCOUNT_ID" = "unknown" ]; then
     exit 1
 fi
 
+=======
+
+ENVIRONMENT="$TF_VAR_environment"
+REGION="$TF_VAR_region"
+
+# Get script directory (project root)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$SCRIPT_DIR/env/stack"
+
+# Export environment variables for Terragrunt
+export TF_VAR_environment="$ENVIRONMENT"
+export TF_VAR_region="$REGION"
+
+# Get AWS account information
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "unknown")
+
+>>>>>>> origin/main
 print_status "=================================================="
 print_status "Destruction Configuration"
 print_status "=================================================="
@@ -165,6 +214,7 @@ print_status "Region:      $REGION"
 print_status "AWS Account: $AWS_ACCOUNT_ID"
 print_status "Base Dir:    $BASE_DIR"
 print_status "=================================================="
+<<<<<<< HEAD
 
 # Validate environment variables (stack-aware). Destroy does not need add-on secrets.
 if [ -f "$SCRIPT_DIR/scripts/validate-env.sh" ]; then
@@ -174,6 +224,8 @@ if [ -f "$SCRIPT_DIR/scripts/validate-env.sh" ]; then
         exit 1
     fi
 fi
+=======
+>>>>>>> origin/main
 
 # Check if module exists
 check_module_exists() {
@@ -467,6 +519,7 @@ destroy_module() {
         exit 1
     }
 
+<<<<<<< HEAD
     # Special handling for VPC destruction - check for lingering resources first
     if [[ "$module_path" == *"/network/vpc" ]]; then
         local vpc_id
@@ -587,6 +640,9 @@ destroy_module() {
         }
     fi
     
+=======
+    terragrunt destroy --auto-approve
+>>>>>>> origin/main
     print_success "$module_name destroyed successfully"
     cd "$SCRIPT_DIR" || true
 }
@@ -607,13 +663,18 @@ destroy_soda_agent() {
 
     # Reverse order of deployment
     if [ "$SKIP_ADDONS" = "yes" ]; then
+<<<<<<< HEAD
         if check_module_exists "soda-agent/addons/soda-agent"; then
+=======
+        if check_module_exists "addons/soda-agent"; then
+>>>>>>> origin/main
             print_error "Refusing to run with --skip-addons: Soda Agent add-on still exists."
             print_error "Destroy the add-on first or rerun without --skip-addons."
             exit 1
         fi
         print_status "Core-only mode: skipping Soda Agent add-on"
     else
+<<<<<<< HEAD
         destroy_module "soda-agent/addons/soda-agent" "Soda Agent"
     fi
     destroy_module "soda-agent/eks/ops-ec2-eks-access" "EKS Access Configuration"
@@ -624,6 +685,22 @@ destroy_soda_agent() {
     # VPC resources (independent stack - no conditional logic needed)
     destroy_module "soda-agent/network/vpc-endpoints" "VPC Endpoints"
     destroy_module "soda-agent/network/vpc" "VPC"
+=======
+        destroy_module "addons/soda-agent" "Soda Agent"
+    fi
+    destroy_module "eks/ops-ec2-eks-access" "EKS Access Configuration"
+    destroy_module "ops/ec2-ops" "EC2 Ops Instance"
+    destroy_module "eks" "EKS Cluster"
+    destroy_module "ops/sg-ops" "Security Groups (Ops)"
+
+    # VPC resources (only if Collibra DQ doesn't exist)
+    if ! check_other_stack_exists "collibra-dq"; then
+        destroy_module "network/vpc-endpoints" "VPC Endpoints"
+        destroy_module "network/vpc" "VPC"
+    else
+        print_warning "VPC resources still in use by Collibra DQ, skipping..."
+    fi
+>>>>>>> origin/main
 
     print_success "Soda Agent stack destroyed successfully!"
 }
@@ -643,6 +720,7 @@ destroy_collibra_dq() {
     print_status "Destroying Collibra DQ Standalone stack..."
 
     if [ "$SKIP_ADDONS" = "yes" ]; then
+<<<<<<< HEAD
         # Ensure no add-on/database modules exist before destroying core infra.
         if check_module_exists "collibra-dq/addons/collibra-dq-standalone" || \
            check_module_exists "collibra-dq/addons/collibra-dq-standalone/alb" || \
@@ -652,11 +730,23 @@ destroy_collibra_dq() {
            check_module_exists "collibra-dq/addons/collibra-dq-standalone/sg-collibra-dq" || \
            check_module_exists "collibra-dq/database/rds-collibra-dq/rds" || \
            check_module_exists "collibra-dq/database/rds-collibra-dq/sg-rds"; then
+=======
+        # Ensure no add-on/database modules exist before destroying shared infra.
+        if check_module_exists "addons/collibra-dq-standalone" || \
+           check_module_exists "addons/collibra-dq-standalone/alb" || \
+           check_module_exists "addons/collibra-dq-standalone/alb/sg-alb" || \
+           check_module_exists "addons/collibra-dq-standalone/alb/target-group-attachment" || \
+           check_module_exists "addons/collibra-dq-standalone/package-upload" || \
+           check_module_exists "addons/collibra-dq-standalone/sg-collibra-dq" || \
+           check_module_exists "database/rds-collibra-dq/rds" || \
+           check_module_exists "database/rds-collibra-dq/sg-rds"; then
+>>>>>>> origin/main
             print_error "Refusing to run with --skip-addons: Collibra DQ add-on/database modules still exist."
             print_error "Destroy the add-on layers first or rerun without --skip-addons."
             exit 1
         fi
 
+<<<<<<< HEAD
         # Only core infrastructure (network)
         # VPC endpoints create ENIs that must be released before VPC deletion
         destroy_module "collibra-dq/network/vpc-endpoints" "VPC Endpoints"
@@ -682,12 +772,23 @@ destroy_collibra_dq() {
         fi
         
         destroy_module "collibra-dq/network/vpc" "VPC"
+=======
+        # Only shared/core infrastructure (network + bootstrap).
+        # Collibra DQ minimal stack does not manage EKS or ops instances.
+        if ! check_other_stack_exists "soda-agent"; then
+            destroy_module "network/vpc-endpoints" "VPC Endpoints"
+            destroy_module "network/vpc" "VPC"
+        else
+            print_warning "VPC resources still in use by Soda Agent, skipping..."
+        fi
+>>>>>>> origin/main
 
         print_success "Collibra DQ Standalone core infrastructure destroyed successfully!"
         return 0
     fi
 
     # Reverse order of deployment
+<<<<<<< HEAD
     # Complete dependency order:
     # 1. Application resources (depend on VPC, security groups, RDS):
     #    - Target Group Attachment (depends on ALB, EC2)
@@ -761,6 +862,24 @@ destroy_collibra_dq() {
     fi
     
     destroy_module "collibra-dq/network/vpc" "VPC"
+=======
+    destroy_module "addons/collibra-dq-standalone/alb/target-group-attachment" "Target Group Attachment"
+    destroy_module "addons/collibra-dq-standalone/alb" "Application Load Balancer"
+    destroy_module "addons/collibra-dq-standalone/alb/sg-alb" "ALB Security Group"
+    destroy_module "addons/collibra-dq-standalone" "Collibra DQ EC2 Instance"
+    destroy_module "addons/collibra-dq-standalone/package-upload" "Package Upload (S3)"
+    destroy_module "addons/collibra-dq-standalone/sg-collibra-dq" "Collibra DQ Security Group"
+    destroy_module "database/rds-collibra-dq/rds" "RDS PostgreSQL Database"
+    destroy_module "database/rds-collibra-dq/sg-rds" "RDS Security Group"
+
+    # VPC resources (only if Soda Agent doesn't exist)
+    if ! check_other_stack_exists "soda-agent"; then
+        destroy_module "network/vpc-endpoints" "VPC Endpoints"
+        destroy_module "network/vpc" "VPC"
+    else
+        print_warning "VPC resources still in use by Soda Agent, skipping..."
+    fi
+>>>>>>> origin/main
 
     print_success "Collibra DQ Standalone stack destroyed successfully!"
 }
@@ -786,10 +905,17 @@ handle_bootstrap() {
         exit 1
     fi
 
+<<<<<<< HEAD
     # Check if VPCs still exist in either stack
     if check_module_exists "soda-agent/network/vpc" || check_module_exists "collibra-dq/network/vpc"; then
         print_error "Cannot destroy bootstrap: VPC still exists in one or both stacks!"
         print_error "Destroy all stacks first"
+=======
+    # Check if VPC still exists
+    if check_module_exists "network/vpc"; then
+        print_error "Cannot destroy bootstrap: VPC still exists!"
+        print_error "Destroy VPC first"
+>>>>>>> origin/main
         exit 1
     fi
 

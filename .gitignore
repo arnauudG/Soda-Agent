@@ -53,8 +53,11 @@ Thumbs.db
 .env
 .env.local
 *.env
+<<<<<<< HEAD
 scripts/set-env.sh
 
+=======
+>>>>>>> origin/main
 # Logs
 *.log
 

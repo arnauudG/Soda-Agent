@@ -68,6 +68,7 @@ locals {
       alb = {
         deletion_protection = false
       }
+<<<<<<< HEAD
 
       # Soda Agent
       soda_agent = {
@@ -84,6 +85,8 @@ locals {
         # Cloud endpoint (derived from SODA_CLOUD_REGION env var, defaults to EU)
         cloud_region  = "eu"            # eu or us
       }
+=======
+>>>>>>> origin/main
     }
 
     prod = {
@@ -135,6 +138,7 @@ locals {
       alb = {
         deletion_protection = true
       }
+<<<<<<< HEAD
 
       # Soda Agent (production: pin chart version for reproducibility)
       soda_agent = {
@@ -146,6 +150,8 @@ locals {
         log_level     = "INFO"
         cloud_region  = "eu"
       }
+=======
+>>>>>>> origin/main
     }
   }
 
